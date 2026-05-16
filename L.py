@@ -45,7 +45,7 @@ SIDE_CHECK_DIST = 350.0
 SIDE_MAX_SCORE_DIST = 400.0
 
 # 진짜 막힘 판단
-STUCK_FRONT_DIST = 150.0
+STUCK_FRONT_DIST = 180.0
 STUCK_POINTS = 8
 
 # 속도
@@ -76,7 +76,7 @@ back_count = 0
 escape_count = 0
 escape_dir = 0
 
-BACK_CYCLES = 3
+BACK_CYCLES = 4
 ESCAPE_CYCLES = 7
 
 # 탈출 방향 판단용
