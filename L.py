@@ -44,8 +44,8 @@ CENTER_BLOCK_POINTS = 3
 SIDE_CHECK_DIST = 350.0
 SIDE_MAX_SCORE_DIST = 400.0
 
-# 진짜 막힘 판단: 정말 가까울 때만 후진
-STUCK_FRONT_DIST = 180.0
+# 진짜 막힘 판단
+STUCK_FRONT_DIST = 150.0
 STUCK_POINTS = 8
 
 # 속도
@@ -76,8 +76,18 @@ back_count = 0
 escape_count = 0
 escape_dir = 0
 
-BACK_CYCLES = 5
+BACK_CYCLES = 3
 ESCAPE_CYCLES = 7
+
+# 탈출 방향 판단용
+last_escape_dir = 0
+escape_fail_count = 0
+
+prev_center_min = 0.0
+prev_path_cnt = 999
+
+MAX_ESCAPE_FAIL = 2
+IMPROVE_DIST = 80.0
 
 
 # ============================================================
@@ -164,7 +174,7 @@ def choose_wider_dir(left_score, right_score):
 def choose_open_dir(left_open_score, right_open_score, left_score, right_score):
     """
     넓은 전방 열린 길 우선 판단.
-    열린 길 점수가 너무 비슷하면 기존 좌우 여유공간 점수 사용.
+    열린 길 점수 차이가 애매하면 기존 좌우 점수 사용.
     """
     diff = abs(left_open_score - right_open_score)
 
@@ -193,7 +203,7 @@ except Exception:
     pass
 
 print("=" * 60)
-print("넓은 전방 열린 길 판단 LiDAR 장애물 회피 시작")
+print("넓은 전방 판단 + 탈출 방향 개선 판단 LiDAR 주행 시작")
 print("RC카 크기: 20cm x 20cm")
 print("라이다 위치: 정중앙")
 print("구조: NORMAL → BACK → ESCAPE")
@@ -274,14 +284,14 @@ while True:
     x, y = polar_to_xy(angle, distance)
 
     # --------------------------------------------------------
-    # 1) 기존 정면 차폭 경로 검사
+    # 1) 정면 차폭 경로 검사
     # --------------------------------------------------------
     if 0 < x < PATH_CHECK_DIST and abs(y) < PATH_HALF_WIDTH:
         path_cnt += 1
         path_min = min(path_min, x)
 
     # --------------------------------------------------------
-    # 2) 진짜 막힘 판단: 아주 가까운 정면만
+    # 2) 진짜 막힘 판단
     # --------------------------------------------------------
     if 0 < x < STUCK_FRONT_DIST and abs(y) < PATH_HALF_WIDTH:
         front_close_cnt += 1
@@ -306,16 +316,13 @@ while True:
     # --------------------------------------------------------
     if 0 < x < LOOKAHEAD_DIST:
 
-        # 중앙 통로 안에 장애물이 있으면 막힌 방향 후보
         if abs(y) < CENTER_WIDTH:
             center_block_cnt += 1
             center_min = min(center_min, x)
 
-        # 왼쪽 전방 열린 공간 점수
         elif -OPEN_SIDE_WIDTH < y < -CENTER_WIDTH:
             left_open_score += min(x, LOOKAHEAD_DIST)
 
-        # 오른쪽 전방 열린 공간 점수
         elif CENTER_WIDTH < y < OPEN_SIDE_WIDTH:
             right_open_score += min(x, LOOKAHEAD_DIST)
 
@@ -385,7 +392,31 @@ while True:
             # ------------------------------------------------
 
             if stuck:
-                escape_dir = open_dir
+                escape_improving = (
+                    center_min > prev_center_min + IMPROVE_DIST or
+                    path_cnt < prev_path_cnt
+                )
+
+                if last_escape_dir == 0:
+                    escape_dir = open_dir
+
+                elif escape_improving:
+                    escape_dir = last_escape_dir
+                    escape_fail_count = 0
+
+                else:
+                    escape_fail_count += 1
+
+                    if escape_fail_count >= MAX_ESCAPE_FAIL:
+                        escape_dir = -last_escape_dir
+                        escape_fail_count = 0
+                    else:
+                        escape_dir = last_escape_dir
+
+                last_escape_dir = escape_dir
+                prev_center_min = center_min
+                prev_path_cnt = path_cnt
+
                 mode = MODE_BACK
                 back_count = BACK_CYCLES
 
@@ -395,9 +426,12 @@ while True:
                     f"STUCK → BACK "
                     f"front_min={front_min:.0f} "
                     f"front_cnt={front_close_cnt} "
+                    f"center_min={center_min:.0f} "
+                    f"path_cnt={path_cnt} "
                     f"Lopen={left_open_score:.0f} "
                     f"Ropen={right_open_score:.0f} "
-                    f"escape_dir={escape_dir}"
+                    f"escape_dir={escape_dir} "
+                    f"fail_count={escape_fail_count}"
                 )
 
             elif path_blocked or center_blocked_ahead:
