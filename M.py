@@ -3,14 +3,13 @@ import time
 import atexit
 
 port_L = "/dev/ttyUSB0"
-port_Ardu = "/dev/ttyS0"
+port_Ardu = "/dev/ttyACM0"
 
 baudrate_L = 460800
 baudrate_Ardu = 460800
 
-ser_L = serial.Serial(port_L, baudrate_L, timeout=1)
-ser_Ardu = serial.Serial(port_Ardu, baudrate_Ardu, timeout=1)
-
+ser_L = serial.Serial(port_L, baudrate_L, timeout=0.1)
+ser_Ardu = serial.Serial(port_Ardu, baudrate_Ardu, timeout=0.1)
 # 차량 설정
 CAR_WIDTH = 200.0
 SAFETY_MARGIN = 80.0
