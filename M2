@@ -17,8 +17,8 @@ SAFETY_MARGIN = 40.0
 MIN_PASS_WIDTH = CAR_WIDTH + SAFETY_MARGIN
 
 # 거리 기준
-EMERGENCY = 150.0
-DETECT = 380.0
+EMERGENCY = 180.0
+DETECT = 420.0
 
 # smoothing
 SMOOTH_ALPHA = 0.6
@@ -27,7 +27,7 @@ prev_left = 9999
 prev_right = 9999
 
 # steer 크기
-STEER = 0.60
+STEER = 0.65
 
 scan_request = bytes([0xA5,0x40])
 ser_L.write(scan_request)
