@@ -51,18 +51,18 @@ STUCK_POINTS = 8
 # 속도
 NORMAL_SPEED = 0.52
 AVOID_SPEED = 0.35
-BACK_SPEED = 0.42
-ESCAPE_SPEED = 0.40
+BACK_SPEED = 0.40
+ESCAPE_SPEED = 0.30
 
 # 조향
-AVOID_STEER = 0.65
-ESCAPE_STEER = 0.70
+AVOID_STEER = 0.55
+ESCAPE_STEER = 0.60
 
 # 조향 방향 보정
 STEER_SIGN = -1
 
 # 조향 smoothing
-SMOOTH = 0.30
+SMOOTH = 0.20
 prev_steer = 0.0
 
 # 상태
@@ -76,8 +76,8 @@ back_count = 0
 escape_count = 0
 escape_dir = 0
 
-BACK_CYCLES = 4
-ESCAPE_CYCLES = 7
+BACK_CYCLES = 5
+ESCAPE_CYCLES = 9
 
 # 탈출 방향 판단용
 last_escape_dir = 0
