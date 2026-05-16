@@ -127,7 +127,7 @@ while True:
         prev_left = left_min
         prev_right = right_min
 
-        gap_width = left_min + right_min - CAR_WIDTH
+        gap_width = left_min + right_min
 
         # 후진 중 뒤 충돌 방지
         if extra_back > 0:
