@@ -12,7 +12,7 @@ ser_L = serial.Serial(port_L, baudrate_L, timeout=0.1)
 ser_Ardu = serial.Serial(port_Ardu, baudrate_Ardu, timeout=0.1)
 # 차량 설정
 CAR_WIDTH = 200.0
-SAFETY_MARGIN = 80.0
+SAFETY_MARGIN = 40.0
 MIN_PASS_WIDTH = CAR_WIDTH + SAFETY_MARGIN
 
 # 거리 기준
@@ -158,7 +158,7 @@ while True:
                 print("EMERGENCY BACK")
 
         # 통로 폭 판단
-        elif gap_width < MIN_PASS_WIDTH:
+        elif gap_width < MIN_PASS_WIDTH and front_min < 350:
 
             if left_min > right_min:
                 ser_Ardu.write(b"L 0.60\n")
