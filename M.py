@@ -13,12 +13,12 @@ ser_Ardu = serial.Serial(port_Ardu, baudrate_Ardu, timeout=1)
 
 # 차량 설정
 CAR_WIDTH = 200.0
-SAFETY_MARGIN = 100.0
+SAFETY_MARGIN = 80.0
 MIN_PASS_WIDTH = CAR_WIDTH + SAFETY_MARGIN
 
 # 거리 기준
 EMERGENCY = 150.0
-DETECT = 350.0
+DETECT = 380.0
 
 # smoothing
 SMOOTH_ALPHA = 0.6
@@ -128,7 +128,7 @@ while True:
         prev_left = left_min
         prev_right = right_min
 
-        gap_width = left_min + right_min
+        gap_width = left_min + right_min - CAR_WIDTH
 
         # 후진 중 뒤 충돌 방지
         if extra_back > 0:
@@ -149,8 +149,8 @@ while True:
             back_cnt += 1
 
             if back_min > 200:
-                ser_Ardu.write(b"B 0.80\n")
-                ser_Ardu.write(b"B 0.90\n")
+                ser_Ardu.write(b"B 0.65\n")
+                ser_Ardu.write(b"B 0.70\n")
 
                 if back_cnt >= 5:
                     extra_back = 3
@@ -170,27 +170,27 @@ while True:
                 print("NARROW GAP → RIGHT")
 
         # 코너 감속
-        elif front_min < 420:
+        elif front_min < 400:
 
             if left_min > right_min:
-                ser_Ardu.write(b"L 0.50\n")
+                ser_Ardu.write(b"L 0.60\n")
                 print("CORNER LEFT SLOW")
 
             else:
-                ser_Ardu.write(b"R 0.50\n")
+                ser_Ardu.write(b"R 0.60\n")
                 print("CORNER RIGHT SLOW")
 
         # 일반 주행
         else:
 
-            if left_min > right_min + 120:
-                ser_Ardu.write(b"L 0.70\n")
+            if left_min > right_min + 90:
+                ser_Ardu.write(b"L 0.60\n")
 
-            elif right_min > left_min + 120:
-                ser_Ardu.write(b"R 0.70\n")
+            elif right_min > left_min + 90:
+                ser_Ardu.write(b"R 0.60\n")
 
             else:
-                ser_Ardu.write(b"F 0.80\n")
+                ser_Ardu.write(b"F 0.65\n")
 
         # 초기화
         scan_buf.clear()
