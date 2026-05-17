@@ -56,17 +56,17 @@ BACK_SPEED      = 0.42
 ESCAPE_SPEED    = 0.42
 
 # 조향: 강하게
-AVOID_STEER  = 0.85
-ESCAPE_STEER = 0.95
+AVOID_STEER  = 0.72
+ESCAPE_STEER = 0.82
 
 # 실제 조향 제한
-MAX_STEER = 1.00
+MAX_STEER = 0.85
 
 # 조향 방향 보정
 STEER_SIGN = -1
 
 # 조향 smoothing: 거의 즉각 반응
-SMOOTH     = 0.03
+SMOOTH     = 0.06
 prev_steer = 0.0
 
 # 상태
