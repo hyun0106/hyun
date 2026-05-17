@@ -18,42 +18,43 @@ ser_Ardu = serial.Serial(port_Ardu, baudrate_Ardu, timeout=1)
 
 
 # ============================================================
-# 2. 파라미터 - 터프 주행 세팅
+# 2. 파라미터
 # ============================================================
 
 MIN_DIST = 80.0
 
 # RC카 크기: 20cm x 20cm, 라이다 정중앙
-CAR_HALF_WIDTH = 100.0
-SAFETY_MARGIN  = 15.0
+CAR_HALF_WIDTH  = 100.0
+SAFETY_MARGIN   = 15.0
 PATH_HALF_WIDTH = CAR_HALF_WIDTH + SAFETY_MARGIN   # 115mm
 
-# 정면 경로 검사: 너무 멀리서 겁먹지 않도록 줄임
+# 정면 경로 검사
 PATH_CHECK_DIST   = 480.0
 PATH_DANGER_DIST  = 430.0
 PATH_BLOCK_POINTS = 3
 
 # 전방 열린 길 판단
-LOOKAHEAD_DIST        = 580.0
-OPEN_SIDE_WIDTH       = 300.0
-CENTER_WIDTH          = PATH_HALF_WIDTH
-CENTER_BLOCK_DIST     = 450.0
-CENTER_BLOCK_POINTS   = 3
+LOOKAHEAD_DIST      = 580.0
+OPEN_SIDE_WIDTH     = 300.0
+CENTER_WIDTH        = PATH_HALF_WIDTH
+CENTER_BLOCK_DIST   = 450.0
+CENTER_BLOCK_POINTS = 3
 
 # 좌우 여유공간 검사
-SIDE_CHECK_DIST       = 280.0
-SIDE_MAX_SCORE_DIST   = 320.0
+SIDE_CHECK_DIST     = 280.0
+SIDE_MAX_SCORE_DIST = 320.0
 
-# 진짜 막힘 판단: 아주 가까울 때만 STUCK
-STUCK_FRONT_DIST = 120.0
-STUCK_POINTS     = 10
+# 진짜 막힘 판단
+# 너무 민감하게 후진하지 않도록 조정
+STUCK_FRONT_DIST = 150.0
+STUCK_POINTS     = 7
 
-# 속도: 터프하게 상향
-NORMAL_SPEED     = 0.65
-AVOID_SPEED_MIN  = 0.30
-AVOID_SPEED_MAX  = 0.45
-BACK_SPEED       = 0.35
-ESCAPE_SPEED     = 0.35
+# 속도
+NORMAL_SPEED    = 0.55
+AVOID_SPEED_MIN = 0.30
+AVOID_SPEED_MAX = 0.45
+BACK_SPEED      = 0.35
+ESCAPE_SPEED    = 0.35
 
 # 조향
 AVOID_STEER  = 0.60
@@ -62,7 +63,7 @@ ESCAPE_STEER = 0.60
 # 조향 방향 보정
 STEER_SIGN = -1
 
-# 조향 smoothing: 작을수록 즉각 반응
+# 조향 smoothing
 SMOOTH     = 0.10
 prev_steer = 0.0
 
@@ -77,9 +78,8 @@ back_count   = 0
 escape_count = 0
 escape_dir   = 0
 
-# 후진은 중간, 탈출 회전은 길게
 BACK_CYCLES   = 3
-ESCAPE_CYCLES = 10
+ESCAPE_CYCLES = 8
 
 last_escape_dir   = 0
 escape_fail_count = 0
@@ -95,13 +95,11 @@ IMPROVE_DIST    = 50.0
 # 3. Gap Finding 파라미터
 # ============================================================
 
-GAP_MAX_VALID_DIST    = 1500.0
-GAP_MIN_ANGLE_DIFF    = 3.0
-GAP_MIN_DIST_JUMP     = 100.0
-GAP_WALL_FAR_THRESH   = 1200.0
-GAP_WALL_NEAR_THRESH  = 350.0
-GAP_MIN_PASS_WIDTH    = CAR_HALF_WIDTH * 2 + 30   # 230mm
-GAP_MIN_SCORE         = 180.0
+GAP_MAX_VALID_DIST = 1500.0
+GAP_MIN_ANGLE_DIFF = 3.0
+GAP_MIN_DIST_JUMP  = 100.0
+GAP_MIN_PASS_WIDTH = CAR_HALF_WIDTH * 2 + 30   # 230mm
+GAP_MIN_SCORE      = 180.0
 
 
 # ============================================================
@@ -196,10 +194,7 @@ def choose_open_dir(left_open_score, right_open_score, left_score, right_score):
 
 
 def calc_avoid_speed(path_min):
-    """
-    장애물이 가까울수록 느리게,
-    멀수록 빠르게 회피.
-    """
+    """장애물이 가까울수록 느리게, 멀수록 빠르게."""
     ratio = clamp(path_min / PATH_DANGER_DIST, 0.0, 1.0)
     return AVOID_SPEED_MIN + (AVOID_SPEED_MAX - AVOID_SPEED_MIN) * ratio
 
@@ -213,8 +208,8 @@ def find_best_gap(scan_buf):
     전방 스캔 데이터에서 통과 가능한 최적 gap을 찾는다.
 
     반환:
-    gap_angle : 음수 = 왼쪽, 양수 = 오른쪽
-    gap_score : 클수록 좋은 gap
+      gap_angle : 음수 = 왼쪽, 양수 = 오른쪽
+      gap_score : 클수록 좋은 gap
     """
 
     front_points = []
@@ -238,22 +233,16 @@ def find_best_gap(scan_buf):
 
         angle_diff = a2 - a1
         dist_jump  = abs(d2 - d1)
-        far_dist   = max(d1, d2)
-        near_dist  = min(d1, d2)
 
-        # 1) 각도 차이가 너무 작으면 노이즈성 gap으로 판단
+        # 1) 각도 간격이 너무 작으면 노이즈성 gap으로 판단
         if angle_diff < GAP_MIN_ANGLE_DIFF:
             continue
 
-        # 2) 거리 변화가 너무 작으면 같은 벽/장애물 표면일 가능성이 큼
+        # 2) 거리 차이가 너무 작으면 같은 표면일 가능성이 큼
         if dist_jump < GAP_MIN_DIST_JUMP:
             continue
 
-        # 3) 한쪽은 매우 멀고 반대쪽은 가까우면 벽 끝 오탐 가능성
-        if far_dist > GAP_WALL_FAR_THRESH and near_dist < GAP_WALL_NEAR_THRESH:
-            continue
-
-        # 4) 실제 통과 폭 계산
+        # 3) 실제 통과 폭 계산
         theta = math.radians(angle_diff)
 
         physical_width = math.sqrt(
@@ -263,26 +252,28 @@ def find_best_gap(scan_buf):
         if physical_width < GAP_MIN_PASS_WIDTH:
             continue
 
-        # 5) 점수 계산: 넓고 정면에 가까울수록 좋음
-        gap_angle = (a1 + a2) / 2.0
+        # 4) 점수 계산: 넓고 정면에 가까울수록 좋음
+        gap_angle     = (a1 + a2) / 2.0
         angle_penalty = abs(gap_angle) / 90.0
-
-        score = physical_width * (1.0 - 0.5 * angle_penalty)
+        score         = physical_width * (1.0 - 0.5 * angle_penalty)
 
         gaps.append((gap_angle, score))
 
     if not gaps:
         return 0.0, 0.0
 
-    best_gap = max(gaps, key=lambda g: g[1])
-    return best_gap[0], best_gap[1]
+    best = max(gaps, key=lambda g: g[1])
+    return best[0], best[1]
 
+
+# ============================================================
+# 7. 조향 강도 계산
+# ============================================================
 
 def calc_avoid_steer(gap_angle, path_min, open_dir, gap_valid):
     """
-    방향은 gap 또는 open_dir로 결정.
-    조향 강도는 장애물 거리 기반.
-    가까울수록 강하게 꺾는다.
+    방향: gap이 유효하면 gap 방향, 없으면 open_dir.
+    강도: 장애물 거리에 반비례.
     """
 
     if gap_valid:
@@ -290,7 +281,6 @@ def calc_avoid_steer(gap_angle, path_min, open_dir, gap_valid):
     else:
         steer_dir = open_dir
 
-    # 가까우면 강하게, 멀면 약하게
     intensity = 1.0 - clamp(path_min / PATH_DANGER_DIST, 0.0, 1.0)
     intensity = clamp(intensity + 0.45, 0.45, 1.0)
 
@@ -299,7 +289,7 @@ def calc_avoid_steer(gap_angle, path_min, open_dir, gap_valid):
 
 
 # ============================================================
-# 7. LiDAR 시작
+# 8. LiDAR 시작
 # ============================================================
 
 ser_L.write(bytes([0xA5, 0x40]))   # RESET
@@ -315,12 +305,13 @@ except Exception:
 
 
 print("=" * 60)
-print("터프 세팅 LiDAR 자율주행 시작")
-print("전략: 웬만하면 전진 회피, STUCK은 최후 상황만")
+print("LiDAR 자율주행 시작")
+print("전략: 후진은 줄이고, 전진 회피와 탈출 회전을 길게 유지")
 print(f"PATH_HALF_WIDTH    = {PATH_HALF_WIDTH:.0f} mm")
 print(f"PATH_CHECK_DIST    = {PATH_CHECK_DIST:.0f} mm")
 print(f"PATH_DANGER_DIST   = {PATH_DANGER_DIST:.0f} mm")
 print(f"STUCK_FRONT_DIST   = {STUCK_FRONT_DIST:.0f} mm")
+print(f"STUCK_POINTS       = {STUCK_POINTS}")
 print(f"NORMAL_SPEED       = {NORMAL_SPEED:.2f}")
 print(f"AVOID_SPEED        = {AVOID_SPEED_MIN:.2f} ~ {AVOID_SPEED_MAX:.2f}")
 print(f"BACK_CYCLES        = {BACK_CYCLES}")
@@ -331,7 +322,7 @@ print("=" * 60)
 
 
 # ============================================================
-# 8. 스캔 누적 변수
+# 9. 스캔 누적 변수
 # ============================================================
 
 scan_buf = []
@@ -354,7 +345,7 @@ center_min       = 9999.0
 
 
 # ============================================================
-# 9. 메인 루프
+# 10. 메인 루프
 # ============================================================
 
 while True:
@@ -498,7 +489,6 @@ while True:
             )
 
             if back_count <= 0:
-                # 후진 완료 후 현재 스캔 기준 gap 재확인
                 fresh_gap_angle, fresh_gap_score = find_best_gap(scan_buf)
                 fresh_gap_valid = fresh_gap_score >= GAP_MIN_SCORE
 
@@ -533,7 +523,6 @@ while True:
         # ----------------------------------------------------
 
         else:
-            # 진짜 박기 직전일 때만 후진
             if stuck:
                 escape_improving = (
                     center_min > prev_center_min + IMPROVE_DIST or
@@ -572,10 +561,10 @@ while True:
                     f"gap_angle={gap_angle:.1f} "
                     f"gap_score={gap_score:.0f} "
                     f"gap_valid={gap_valid} "
-                    f"escape_dir={escape_dir}"
+                    f"escape_dir={escape_dir} "
+                    f"fail_cnt={escape_fail_count}"
                 )
 
-            # 일반 위험 상황은 후진하지 않고 전진 회피
             elif path_blocked or center_blocked_ahead:
                 raw_steer = calc_avoid_steer(
                     gap_angle,
@@ -600,7 +589,6 @@ while True:
                     f"speed={dynamic_speed:.2f}"
                 )
 
-            # 완전히 괜찮으면 빠르게 직진
             else:
                 send_forward(0.0, NORMAL_SPEED)
 
