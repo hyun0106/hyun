@@ -27,24 +27,25 @@ DETECT = 500.0
 EMERGENCY = 150.0
 
 MAX_STEER = 0.85
-ROT_THRESH = 115.0
 
-# ── 전방 충돌 위험 조건 ─────────────────────
-# RC카 모서리 충돌까지 고려해서 ±35도 사용
-FRONT_RISK_ARC = 35.0
-FRONT_RISK_DIST = 220.0
+# 옆쪽 갭을 무리하게 전진으로 따라가지 않도록 낮춤
+ROT_THRESH = 85.0
 
 # ── 속도 파라미터 ──────────────────────────
 BASE_SPEED = 0.75
 MIN_SPEED = 0.45
 OPEN_SPEED = 0.80
 
-# ── 후진/탈출 파라미터 ─────────────────────
-BACK_CYCLES = 4
-ESCAPE_CYCLES = 5
+# ── NO_GAP 탈출 파라미터 ───────────────────
+# 후진은 조금 더 충분히, 조향 전진은 조금 짧게
+BACK_CYCLES = 5
+ESCAPE_CYCLES = 4
+
 BACK_SPEED = 0.40
 ESCAPE_SPEED = 0.45
-ESCAPE_STEER = 0.90
+
+# 0.90은 거의 제자리급이라 0.75로 완화
+ESCAPE_STEER = 0.75
 
 # ── 아두이노 timeout 방지용 재전송 ──────────
 last_cmd = b"S\n"
@@ -75,7 +76,7 @@ def resend_last_cmd_if_needed():
 def cleanup():
     try:
         send_cmd(b"S\n")
-        ser_L.write(bytes([0xA5, 0x25]))  # STOP
+        ser_L.write(bytes([0xA5, 0x25]))
         time.sleep(0.1)
         ser_L.close()
         ser_Ardu.close()
@@ -99,37 +100,9 @@ def build_polar_hist(scan_buf):
     return hist, has_pt
 
 
-def nearest_in_arc(hist, has_pt, center_cw, arc_half=25):
-    center_bin = int(center_cw / BIN_DEG) % N_BINS
-    n_check = max(1, int(arc_half / BIN_DEG))
-
-    min_d = 9999.0
-
-    for k in range(-n_check, n_check + 1):
-        idx = (center_bin + k) % N_BINS
-        if has_pt[idx] and hist[idx] < min_d:
-            min_d = hist[idx]
-
-    return min_d
-
-
-def front_collision_risk(hist, has_pt):
-    """
-    전방 ±35도 안에서 220mm 이하 장애물이 있으면
-    갭 판단 성공 여부와 상관없이 후진 탈출.
-    """
-    front_near = nearest_in_arc(hist, has_pt, 0.0, arc_half=FRONT_RISK_ARC)
-
-    if front_near <= FRONT_RISK_DIST:
-        return True, front_near
-
-    return False, front_near
-
-
 def find_vfh_gaps(hist, has_pt, detect_dist, min_pass_mm):
     blocked = [has_pt[i] and hist[i] <= detect_dist for i in range(N_BINS)]
 
-    # 단일 노이즈 제거
     smoothed = blocked[:]
     for i in range(N_BINS):
         if blocked[i] and not blocked[(i - 1) % N_BINS] and not blocked[(i + 1) % N_BINS]:
@@ -196,6 +169,20 @@ def select_best_gap(gaps, min_pass_mm):
     return max(pool, key=lambda g: g["width"] * 0.25 - abs(g["center"]) * 1.9)
 
 
+def nearest_in_arc(hist, has_pt, center_cw, arc_half=25):
+    center_bin = int(center_cw / BIN_DEG) % N_BINS
+    n_check = max(1, int(arc_half / BIN_DEG))
+
+    min_d = 9999.0
+
+    for k in range(-n_check, n_check + 1):
+        idx = (center_bin + k) % N_BINS
+        if has_pt[idx] and hist[idx] < min_d:
+            min_d = hist[idx]
+
+    return min_d
+
+
 # ── 상태 변수 ─────────────────────────────
 scan_buf = []
 
@@ -204,21 +191,20 @@ escape_cnt = 0
 escape_dir = 1.0
 
 print("=" * 65)
-print(" VFH 장애물 회피 최종 코드")
+print(" VFH 장애물 회피 코드")
 print(" Arduino command: F steer speed / B speed / S")
-print(" 전방 ±35도 충돌 위험 검사 포함")
-print(f" GAP_MIN_PASS={GAP_MIN_PASS:.0f}mm")
-print(f" FRONT_RISK={FRONT_RISK_DIST:.0f}mm, ±{FRONT_RISK_ARC:.0f}deg")
+print(" 마지막 명령 자동 재전송 적용")
+print(f" DETECT={DETECT:.0f}mm, GAP_MIN_PASS={GAP_MIN_PASS:.0f}mm")
+print(f" ROT_THRESH={ROT_THRESH:.0f}deg")
+print(f" BACK={BACK_CYCLES}, ESCAPE={ESCAPE_CYCLES}, ESCAPE_STEER={ESCAPE_STEER:.2f}")
 print("=" * 65)
 
 
 while True:
-    # 아두이노 timeout 방지
     resend_last_cmd_if_needed()
 
     data = ser_L.read(5)
 
-    # read 중 시간이 지났을 수 있으므로 재전송
     resend_last_cmd_if_needed()
 
     if len(data) != 5:
@@ -250,7 +236,6 @@ while True:
     if s_flag == 1:
         hist, has_pt = build_polar_hist(scan_buf)
 
-        # 아무것도 안 보이면 빠르게 직진
         if not any(has_pt):
             send_cmd(f"F 0.00 {OPEN_SPEED:.2f}\n")
             back_cnt = 0
@@ -261,16 +246,8 @@ while True:
             gaps = find_vfh_gaps(hist, has_pt, DETECT, GAP_MIN_PASS)
             best = select_best_gap(gaps, GAP_MIN_PASS)
 
-            front_risk, front_d = front_collision_risk(hist, has_pt)
-
-            # ── 정상 VFH 전진 조건 ───────────
-            # 전방 충돌 위험이 있으면 갭 판단 성공이어도 전진하지 않음
-            if (
-                not front_risk
-                and best is not None
-                and best["passable"]
-                and abs(best["center"]) <= ROT_THRESH
-            ):
+            # ── 정상 전진 회피 ─────────────
+            if best is not None and best["passable"] and abs(best["center"]) <= ROT_THRESH:
                 d_L = best["d_L"]
                 d_R = best["d_R"]
 
@@ -297,14 +274,10 @@ while True:
                 print(
                     f"VFH_FWD  gap={best['width']:.0f}mm "
                     f"center={best['center']:+.0f}deg "
-                    f"steer={steer:+.2f} speed={speed:.2f} "
-                    f"front={front_d:.0f}mm"
+                    f"steer={steer:+.2f} speed={speed:.2f} near={near_d:.0f}mm"
                 )
 
-            # ── 후진 탈출 조건 ───────────────
-            # 1. 전방 ±35도 안에 가까운 장애물 있음
-            # 2. 통과 가능한 갭 없음
-            # 3. 갭이 너무 옆/뒤쪽임
+            # ── 후진 탈출 ──────────────
             else:
                 if gaps:
                     open_g = max(gaps, key=lambda g: g["width"])
@@ -326,8 +299,7 @@ while True:
                     escape_cnt = 0
 
                     print(
-                        f"BACK  {back_cnt}/{BACK_CYCLES} "
-                        f"front={front_d:.0f}mm "
+                        f"NO_GAP_BACK  {back_cnt}/{BACK_CYCLES} "
                         f"widest={widest:.0f}mm dir={escape_dir:+.0f}"
                     )
 
@@ -337,14 +309,13 @@ while True:
                     escape_cnt += 1
 
                     print(
-                        f"ESCAPE  {escape_cnt}/{ESCAPE_CYCLES} "
-                        f"steer={steer:+.2f} "
-                        f"target={target_dir:+.0f}deg front={front_d:.0f}mm"
+                        f"NO_GAP_ESCAPE  {escape_cnt}/{ESCAPE_CYCLES} "
+                        f"steer={steer:+.2f} target={target_dir:+.0f}deg"
                     )
 
                 else:
                     back_cnt = 0
                     escape_cnt = 0
-                    print("ESCAPE_RESET")
+                    print("NO_GAP_RESET")
 
         scan_buf = []
