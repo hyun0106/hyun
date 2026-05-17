@@ -19,16 +19,14 @@ ser_L.write(bytes([0xA5, 0x20]))   # SCAN
 BIN_DEG = 5.0
 N_BINS = int(360 / BIN_DEG)
 
-ROBOT_WIDTH = 125.0       # 실제 폭 X, 갭 판단용 유효 폭
-GAP_MARGIN = 10.0
-GAP_MIN_PASS = ROBOT_WIDTH + GAP_MARGIN   # 135mm
+# RC카 크기: 정사각형 20cm × 20cm
+CAR_WIDTH = 200.0
+BASE_MARGIN = 10.0       # 최대한 줄인 안전마진
 
 DETECT = 500.0
 EMERGENCY = 150.0
 
 MAX_STEER = 0.85
-
-# 옆쪽 갭을 무리하게 전진으로 따라가지 않도록 낮춤
 ROT_THRESH = 85.0
 
 # ── 속도 파라미터 ──────────────────────────
@@ -37,14 +35,11 @@ MIN_SPEED = 0.45
 OPEN_SPEED = 0.80
 
 # ── NO_GAP 탈출 파라미터 ───────────────────
-# 후진은 조금 더 충분히, 조향 전진은 조금 짧게
 BACK_CYCLES = 5
 ESCAPE_CYCLES = 4
 
 BACK_SPEED = 0.40
 ESCAPE_SPEED = 0.45
-
-# 0.90은 거의 제자리급이라 0.75로 완화
 ESCAPE_STEER = 0.75
 
 # ── 아두이노 timeout 방지용 재전송 ──────────
@@ -76,7 +71,7 @@ def resend_last_cmd_if_needed():
 def cleanup():
     try:
         send_cmd(b"S\n")
-        ser_L.write(bytes([0xA5, 0x25]))
+        ser_L.write(bytes([0xA5, 0x25]))  # STOP
         time.sleep(0.1)
         ser_L.close()
         ser_Ardu.close()
@@ -85,6 +80,21 @@ def cleanup():
 
 
 atexit.register(cleanup)
+
+
+def calc_required_width(gap_angle):
+    """
+    gap_angle이 작을수록 직진에 가까움.
+    직진에 가까우면 필요 폭이 작고,
+    비스듬히 들어가면 모서리 때문에 필요 폭이 커짐.
+    """
+    theta = math.radians(abs(gap_angle))
+
+    projected_width = CAR_WIDTH * (
+        abs(math.cos(theta)) + abs(math.sin(theta))
+    )
+
+    return projected_width + BASE_MARGIN
 
 
 def build_polar_hist(scan_buf):
@@ -100,9 +110,10 @@ def build_polar_hist(scan_buf):
     return hist, has_pt
 
 
-def find_vfh_gaps(hist, has_pt, detect_dist, min_pass_mm):
+def find_vfh_gaps(hist, has_pt, detect_dist):
     blocked = [has_pt[i] and hist[i] <= detect_dist for i in range(N_BINS)]
 
+    # 단일 노이즈 제거
     smoothed = blocked[:]
     for i in range(N_BINS):
         if blocked[i] and not blocked[(i - 1) % N_BINS] and not blocked[(i + 1) % N_BINS]:
@@ -141,11 +152,14 @@ def find_vfh_gaps(hist, has_pt, detect_dist, min_pass_mm):
                     gap_w = (d_L + d_R) * math.sin(math.radians(delta_deg / 2.0))
                     center_s = center_cw if center_cw <= 180.0 else center_cw - 360.0
 
+                    required_w = calc_required_width(center_s)
+
                     gaps.append({
                         "center": center_s,
                         "center_cw": center_cw,
                         "width": gap_w,
-                        "passable": gap_w >= min_pass_mm,
+                        "required": required_w,
+                        "passable": gap_w >= required_w,
                         "delta_deg": delta_deg,
                         "d_L": d_L,
                         "d_R": d_R,
@@ -159,11 +173,11 @@ def find_vfh_gaps(hist, has_pt, detect_dist, min_pass_mm):
     return gaps
 
 
-def select_best_gap(gaps, min_pass_mm):
+def select_best_gap(gaps):
     if not gaps:
         return None
 
-    passable = [g for g in gaps if g["width"] >= min_pass_mm]
+    passable = [g for g in gaps if g["passable"]]
     pool = passable if passable else gaps
 
     return max(pool, key=lambda g: g["width"] * 0.25 - abs(g["center"]) * 1.9)
@@ -192,11 +206,10 @@ escape_dir = 1.0
 
 print("=" * 65)
 print(" VFH 장애물 회피 코드")
+print(" 동적 필요 폭 계산 적용")
 print(" Arduino command: F steer speed / B speed / S")
-print(" 마지막 명령 자동 재전송 적용")
-print(f" DETECT={DETECT:.0f}mm, GAP_MIN_PASS={GAP_MIN_PASS:.0f}mm")
+print(f" CAR_WIDTH={CAR_WIDTH:.0f}mm, BASE_MARGIN={BASE_MARGIN:.0f}mm")
 print(f" ROT_THRESH={ROT_THRESH:.0f}deg")
-print(f" BACK={BACK_CYCLES}, ESCAPE={ESCAPE_CYCLES}, ESCAPE_STEER={ESCAPE_STEER:.2f}")
 print("=" * 65)
 
 
@@ -243,8 +256,8 @@ while True:
             print(f"OPEN  F 0.00 {OPEN_SPEED:.2f}")
 
         else:
-            gaps = find_vfh_gaps(hist, has_pt, DETECT, GAP_MIN_PASS)
-            best = select_best_gap(gaps, GAP_MIN_PASS)
+            gaps = find_vfh_gaps(hist, has_pt, DETECT)
+            best = select_best_gap(gaps)
 
             # ── 정상 전진 회피 ─────────────
             if best is not None and best["passable"] and abs(best["center"]) <= ROT_THRESH:
@@ -273,6 +286,7 @@ while True:
 
                 print(
                     f"VFH_FWD  gap={best['width']:.0f}mm "
+                    f"req={best['required']:.0f}mm "
                     f"center={best['center']:+.0f}deg "
                     f"steer={steer:+.2f} speed={speed:.2f} near={near_d:.0f}mm"
                 )
@@ -283,6 +297,7 @@ while True:
                     open_g = max(gaps, key=lambda g: g["width"])
                     escape_dir = 1.0 if open_g["center"] > 0 else -1.0
                     widest = open_g["width"]
+                    required = open_g["required"]
                     target_dir = open_g["center"]
 
                 else:
@@ -291,6 +306,7 @@ while True:
 
                     escape_dir = 1.0 if right_d > left_d else -1.0
                     widest = 0.0
+                    required = 0.0
                     target_dir = 45.0 if escape_dir > 0 else -45.0
 
                 if back_cnt < BACK_CYCLES:
@@ -300,7 +316,8 @@ while True:
 
                     print(
                         f"NO_GAP_BACK  {back_cnt}/{BACK_CYCLES} "
-                        f"widest={widest:.0f}mm dir={escape_dir:+.0f}"
+                        f"widest={widest:.0f}mm req={required:.0f}mm "
+                        f"dir={escape_dir:+.0f}"
                     )
 
                 elif escape_cnt < ESCAPE_CYCLES:
