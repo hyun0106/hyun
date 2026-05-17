@@ -45,26 +45,28 @@ SIDE_CHECK_DIST     = 280.0
 SIDE_MAX_SCORE_DIST = 320.0
 
 # 진짜 막힘 판단
-# 너무 민감하게 후진하지 않도록 조정
 STUCK_FRONT_DIST = 150.0
 STUCK_POINTS     = 7
 
-# 속도
-NORMAL_SPEED    = 0.55
-AVOID_SPEED_MIN = 0.30
-AVOID_SPEED_MAX = 0.45
-BACK_SPEED      = 0.35
-ESCAPE_SPEED    = 0.35
+# 속도: 전체적으로 상향
+NORMAL_SPEED    = 0.68
+AVOID_SPEED_MIN = 0.38
+AVOID_SPEED_MAX = 0.55
+BACK_SPEED      = 0.42
+ESCAPE_SPEED    = 0.42
 
-# 조향
-AVOID_STEER  = 0.60
-ESCAPE_STEER = 0.60
+# 조향: 강하게
+AVOID_STEER  = 0.85
+ESCAPE_STEER = 0.95
+
+# 실제 조향 제한
+MAX_STEER = 1.00
 
 # 조향 방향 보정
 STEER_SIGN = -1
 
-# 조향 smoothing
-SMOOTH     = 0.10
+# 조향 smoothing: 거의 즉각 반응
+SMOOTH     = 0.03
 prev_steer = 0.0
 
 # 상태
@@ -78,8 +80,9 @@ back_count   = 0
 escape_count = 0
 escape_dir   = 0
 
-BACK_CYCLES   = 3
-ESCAPE_CYCLES = 8
+# 후진은 길게, 전진 회전은 적당히
+BACK_CYCLES   = 6
+ESCAPE_CYCLES = 7
 
 last_escape_dir   = 0
 escape_fail_count = 0
@@ -130,11 +133,11 @@ def clamp(value, low, high):
 def send_forward(steer, speed):
     global prev_steer
 
-    steer = clamp(steer, -0.60, 0.60)
+    steer = clamp(steer, -MAX_STEER, MAX_STEER)
     speed = clamp(speed, 0.0, 1.0)
 
     steer = SMOOTH * prev_steer + (1.0 - SMOOTH) * steer
-    steer = clamp(steer, -0.60, 0.60)
+    steer = clamp(steer, -MAX_STEER, MAX_STEER)
 
     prev_steer = steer
     ser_Ardu.write(f"F {steer:.2f} {speed:.2f}\n".encode())
@@ -144,7 +147,7 @@ def send_forward_direct(steer, speed):
     """ESCAPE 전용. smoothing 없이 바로 조향."""
     global prev_steer
 
-    steer = clamp(steer, -0.60, 0.60)
+    steer = clamp(steer, -MAX_STEER, MAX_STEER)
     speed = clamp(speed, 0.0, 1.0)
 
     prev_steer = steer
@@ -204,14 +207,6 @@ def calc_avoid_speed(path_min):
 # ============================================================
 
 def find_best_gap(scan_buf):
-    """
-    전방 스캔 데이터에서 통과 가능한 최적 gap을 찾는다.
-
-    반환:
-      gap_angle : 음수 = 왼쪽, 양수 = 오른쪽
-      gap_score : 클수록 좋은 gap
-    """
-
     front_points = []
 
     for angle, distance in scan_buf:
@@ -234,15 +229,12 @@ def find_best_gap(scan_buf):
         angle_diff = a2 - a1
         dist_jump  = abs(d2 - d1)
 
-        # 1) 각도 간격이 너무 작으면 노이즈성 gap으로 판단
         if angle_diff < GAP_MIN_ANGLE_DIFF:
             continue
 
-        # 2) 거리 차이가 너무 작으면 같은 표면일 가능성이 큼
         if dist_jump < GAP_MIN_DIST_JUMP:
             continue
 
-        # 3) 실제 통과 폭 계산
         theta = math.radians(angle_diff)
 
         physical_width = math.sqrt(
@@ -252,7 +244,6 @@ def find_best_gap(scan_buf):
         if physical_width < GAP_MIN_PASS_WIDTH:
             continue
 
-        # 4) 점수 계산: 넓고 정면에 가까울수록 좋음
         gap_angle     = (a1 + a2) / 2.0
         angle_penalty = abs(gap_angle) / 90.0
         score         = physical_width * (1.0 - 0.5 * angle_penalty)
@@ -282,10 +273,10 @@ def calc_avoid_steer(gap_angle, path_min, open_dir, gap_valid):
         steer_dir = open_dir
 
     intensity = 1.0 - clamp(path_min / PATH_DANGER_DIST, 0.0, 1.0)
-    intensity = clamp(intensity + 0.45, 0.45, 1.0)
+    intensity = clamp(intensity + 0.55, 0.55, 1.0)
 
     steer = steer_dir * AVOID_STEER * intensity
-    return clamp(steer, -0.60, 0.60)
+    return clamp(steer, -MAX_STEER, MAX_STEER)
 
 
 # ============================================================
@@ -305,8 +296,7 @@ except Exception:
 
 
 print("=" * 60)
-print("LiDAR 자율주행 시작")
-print("전략: 후진은 줄이고, 전진 회피와 탈출 회전을 길게 유지")
+print("LiDAR 자율주행 시작 - 강한 회전/긴 후진 버전")
 print(f"PATH_HALF_WIDTH    = {PATH_HALF_WIDTH:.0f} mm")
 print(f"PATH_CHECK_DIST    = {PATH_CHECK_DIST:.0f} mm")
 print(f"PATH_DANGER_DIST   = {PATH_DANGER_DIST:.0f} mm")
@@ -314,10 +304,11 @@ print(f"STUCK_FRONT_DIST   = {STUCK_FRONT_DIST:.0f} mm")
 print(f"STUCK_POINTS       = {STUCK_POINTS}")
 print(f"NORMAL_SPEED       = {NORMAL_SPEED:.2f}")
 print(f"AVOID_SPEED        = {AVOID_SPEED_MIN:.2f} ~ {AVOID_SPEED_MAX:.2f}")
+print(f"BACK_SPEED         = {BACK_SPEED:.2f}")
+print(f"ESCAPE_SPEED       = {ESCAPE_SPEED:.2f}")
 print(f"BACK_CYCLES        = {BACK_CYCLES}")
 print(f"ESCAPE_CYCLES      = {ESCAPE_CYCLES}")
-print(f"GAP_MIN_PASS_WIDTH = {GAP_MIN_PASS_WIDTH:.0f} mm")
-print(f"GAP_MIN_SCORE      = {GAP_MIN_SCORE:.0f}")
+print(f"MAX_STEER          = {MAX_STEER:.2f}")
 print("=" * 60)
 
 
@@ -354,10 +345,7 @@ while True:
     if len(data) != 5:
         continue
 
-    # --------------------------------------------------------
     # 패킷 검증
-    # --------------------------------------------------------
-
     s_flag     = data[0] & 0x01
     s_inv_flag = (data[0] & 0x02) >> 1
 
@@ -374,10 +362,7 @@ while True:
     if quality == 0:
         continue
 
-    # --------------------------------------------------------
     # 각도, 거리 계산
-    # --------------------------------------------------------
-
     angle_q6 = (data[1] >> 1) | (data[2] << 7)
     angle = angle_q6 / 64.0
 
@@ -391,26 +376,17 @@ while True:
 
     x, y = polar_to_xy(angle, distance)
 
-    # --------------------------------------------------------
     # 1) 정면 차폭 경로 검사
-    # --------------------------------------------------------
-
     if 0 < x < PATH_CHECK_DIST and abs(y) < PATH_HALF_WIDTH:
         path_cnt += 1
         path_min = min(path_min, x)
 
-    # --------------------------------------------------------
     # 2) 진짜 막힘 판단
-    # --------------------------------------------------------
-
     if 0 < x < STUCK_FRONT_DIST and abs(y) < PATH_HALF_WIDTH:
         front_close_cnt += 1
         front_min = min(front_min, x)
 
-    # --------------------------------------------------------
     # 3) 좌우 여유공간 점수 계산
-    # --------------------------------------------------------
-
     if 0 < x < SIDE_CHECK_DIST:
         score = min(distance, SIDE_MAX_SCORE_DIST)
 
@@ -422,10 +398,7 @@ while True:
             right_score += score
             right_cnt += 1
 
-    # --------------------------------------------------------
     # 4) 넓은 전방 열린 길 판단
-    # --------------------------------------------------------
-
     if 0 < x < LOOKAHEAD_DIST:
 
         if abs(y) < CENTER_WIDTH:
@@ -438,10 +411,7 @@ while True:
         elif CENTER_WIDTH < y < OPEN_SIDE_WIDTH:
             right_open_score += min(x, LOOKAHEAD_DIST)
 
-    # --------------------------------------------------------
     # 한 바퀴 스캔 완료 시 판단
-    # --------------------------------------------------------
-
     if s_flag == 1 and len(scan_buf) > 15:
 
         path_blocked = (
@@ -473,10 +443,6 @@ while True:
         # 상태 기반 판단
         # ====================================================
 
-        # ----------------------------------------------------
-        # BACK 모드
-        # ----------------------------------------------------
-
         if mode == MODE_BACK:
             send_backward(BACK_SPEED)
             back_count -= 1
@@ -498,10 +464,6 @@ while True:
                 mode = MODE_ESCAPE
                 escape_count = ESCAPE_CYCLES
 
-        # ----------------------------------------------------
-        # ESCAPE 모드
-        # ----------------------------------------------------
-
         elif mode == MODE_ESCAPE:
             real_steer = STEER_SIGN * ESCAPE_STEER * escape_dir
 
@@ -517,10 +479,6 @@ while True:
 
             if escape_count <= 0:
                 mode = MODE_NORMAL
-
-        # ----------------------------------------------------
-        # NORMAL 모드
-        # ----------------------------------------------------
 
         else:
             if stuck:
@@ -600,10 +558,7 @@ while True:
                     f"Ropen={right_open_score:.0f}"
                 )
 
-        # ----------------------------------------------------
         # 다음 스캔 초기화
-        # ----------------------------------------------------
-
         scan_buf = []
 
         path_cnt = 0
