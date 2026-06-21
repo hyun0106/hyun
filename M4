@@ -77,14 +77,14 @@ TARGETS = ['red', 'yellow', 'blue']
 BIN_DEG       = 4.0
 N_BINS        = int(360 / BIN_DEG)
 GAP_MIN_PASS  = 100.0
-DETECT        = 500.0
+DETECT        = 800.0
 VELO_DOWN     = 400.0
 EMERGENCY     = 200.0
 LID_MAX_STEER = 1.2
 ROT_THRESH    = 100.0
 ROBOT_RADIUS  = 60.0
 
-OBS_RETURN_TIME = 3.0   # 장애물 통과 후 복귀 조향 유지 시간 (s)
+OBS_RETURN_TIME = 2.0   # 장애물 통과 후 복귀 조향 유지 시간 (s)
 OBS_RETURN_GAIN = 0.70   # 복귀 조향 계수
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,50 +282,44 @@ def _obstacle_follow_drive(ser, color_dir):
 
     ls = _lidar_read()
 
-    d = ls['nearest_d']
-    a = ls['nearest_a']
-
-    if d > 3000:
-        return "NO_OBS"
-
     target_dist = 450.0
 
-    dist_err = d - target_dist
+    if color_dir < 0:
 
-    steer_dist = np.clip(
-        dist_err * 0.003,
-        -0.4,
-        0.4
-    )
+        wall_dist = ls['lat_L']
 
-    follow_side = -1 if color_dir < 0 else 1
+        err = target_dist - wall_dist
 
-    tangent_angle = a + follow_side * 90.0
+        steer = np.clip(
+            -err * 0.003,
+            -0.6,
+            0.6
+        )
 
-    while tangent_angle > 180:
-        tangent_angle -= 360
+    else:
 
-    while tangent_angle < -180:
-        tangent_angle += 360
+        wall_dist = ls['lat_R']
 
-    steer_tangent = np.clip(
-        tangent_angle / 90.0,
-        -1.0,
-        1.0
-    )
+        err = target_dist - wall_dist
 
-    steer = (
-        0.75 * steer_tangent +
-        0.25 * steer_dist
-    )
+        steer = np.clip(
+            err * 0.003,
+            -0.6,
+            0.6
+        )
 
-    speed = 0.28
+    speed = 0.50
 
     ser.write(
         f"F {steer:.2f} {speed:.2f}\n".encode()
     )
 
-    return f"OBS d={d:.0f} a={a:.0f}"
+    return (
+        f"WALL "
+        f"d={wall_dist:.0f} "
+        f"err={err:.0f} "
+        f"st={steer:+.2f}"
+    )
 
 def _vfh_drive(ser):
     ls = _lidar_read()
@@ -723,6 +717,7 @@ def main():
                                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 165, 255), 2)
                         print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
                     else:
+                        print(last_color_offset)
 
                         log = _obstacle_follow_drive(
                             ser,
