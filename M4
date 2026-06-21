@@ -732,7 +732,7 @@ def main():
                         ser.write(b"S\n")
                         continue
                     else:
-                        cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+                        cmd_steer = float(np.clip(smoothed_steer, -MAX_STEER, MAX_STEER))
                         cmd_speed = float(mem_speed)
                         ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
                     if mem_invis_count >= CONFIRM_FRAMES:
