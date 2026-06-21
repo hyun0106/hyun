@@ -308,11 +308,14 @@ def _obstacle_follow_drive(ser, color_dir):
             0.6
         )
 
-    speed = 0.50
+    speed = _speed_limit(0.50)
 
-    ser.write(
-        f"F {steer:.2f} {speed:.2f}\n".encode()
-    )
+    if speed <= 0:
+        ser.write(b"S\n")
+    else:
+        cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+        cmd_speed = float(speed)
+        ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
 
     return (
         f"WALL "
@@ -323,11 +326,26 @@ def _obstacle_follow_drive(ser, color_dir):
 
 def _vfh_drive(ser):
     ls = _lidar_read()
+
     if not ls['has_data']:
-        ser.write(f"F 0.00 {PIVOT_SPEED:.2f}\n".encode())
-        return "NO_LIDAR_FWD"
-    ser.write(f"F {ls['vfh_steer']:.2f} {ls['vfh_speed']:.2f}\n".encode())
-    return f"VFH_FWD st={ls['vfh_steer']:+.2f} spd={ls['vfh_speed']:.2f}"
+        ser.write(b"S\n")
+        return "NO_LIDAR"
+
+    steer = ls['vfh_steer']
+    speed = ls['vfh_speed']
+
+    safe_speed = _speed_limit(speed)
+
+    if safe_speed <= 0:
+        ser.write(b"S\n")
+        return "VFH_STOP"
+
+    cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+    cmd_speed = float(safe_speed)
+
+    ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
+
+    return f"VFH st={cmd_steer:+.2f} spd={cmd_speed:.2f}"
 
 
 def _speed_limit(cam_speed: float) -> float:
@@ -498,6 +516,11 @@ def main():
     print("=" * 60)
 
     while True:
+        ls = _lidar_read()
+
+        if ls['emg_near'] < EMERGENCY:
+            ser.write(b"S\n")
+            continue
         ret, raw = cap.read()
 
         final_steer = 0.0
@@ -617,7 +640,13 @@ def main():
             prev_area_r    = area_r
             if speed > 0:
                 print(f"  [SEEK] {color.upper()} {log_msg} spd={speed:.2f}")
-                ser.write(f"F {steer:.2f} {_speed_limit(speed):.2f}\n".encode())
+
+                if speed <= 0:
+                    ser.write(b"S\n")
+                else:
+                    cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+                    cmd_speed = float(speed)
+                    ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
             else:
                 # 장애물로 속도 0 → VFH로 회피 (area 무관)
                 vfh_log = _vfh_drive(ser)
@@ -642,12 +671,20 @@ def main():
                 cv2.putText(vis, f"ENTERING {color.upper()} off={weak_offset:+.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 255, 0), 2)
                 print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
-                final_steer = steer
-                final_speed = _speed_limit(WEAK_SPEED)
+                final_steer = smoothed_steer
+                weak_speed = _speed_limit(WEAK_SPEED)
+
+                if weak_speed <= 0:
+                    ser.write(b"S\n")
+                else:
+                    cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+                    cmd_speed = float(weak_speed)
+                    ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
             else:
                 on_zone_count += 1
                 nudge_spd = _speed_limit(NUDGE_SPEED)
-                ser.write(f"F 0.00 {nudge_spd:.2f}\n".encode() if nudge_spd > 0 else b"S\n")
+                final_steer = smoothed_steer
+                final_speed = nudge_spd
                 cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} nudge={nudge_spd:.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
                 print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count} nudge={nudge_spd:.2f}")
@@ -689,7 +726,15 @@ def main():
                                 (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 220, 100), 2)
                     print(f"  [MEM] {color.upper()} t={elapsed:.2f}s cnt={mem_invis_count} st={steer_cmd:+.2f}")
                     final_steer = steer_cmd
-                    final_speed = mem_speed
+                    mem_speed = _speed_limit(SPEED_NEAR)
+
+                    if mem_speed <= 0:
+                        ser.write(b"S\n")
+                        continue
+                    else:
+                        cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+                        cmd_speed = float(mem_speed)
+                        ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
                     if mem_invis_count >= CONFIRM_FRAMES:
                         state = 'STOP'; stop_start = time.time()
                         ser.write(b"S\n")
@@ -720,8 +765,14 @@ def main():
                         ret_st  = float(np.clip(last_obs_steer * OBS_RETURN_GAIN,
                                                 -MAX_STEER, MAX_STEER))
                         ret_spd = _speed_limit(SPEED_NEAR)
-                        ser.write(f"F {ret_st:.2f} {ret_spd:.2f}\n".encode()
-                                  if ret_spd > 0 else b"S\n")
+                        ret_spd = _speed_limit(ret_spd)
+
+                        if ret_spd <= 0:
+                            ser.write(b"S\n")
+                        else:
+                            cmd_steer = float(np.clip(ret_st, -MAX_STEER, MAX_STEER))
+                            cmd_speed = float(ret_spd)
+                            ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
                         cv2.putText(vis, f"OBS_RET st={ret_st:+.2f} {return_elapsed:.1f}s",
                                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 165, 255), 2)
                         print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
@@ -729,7 +780,8 @@ def main():
                         print(last_color_offset)
 
                         if not ls['has_data'] or ls['emg_near'] > DETECT:
-                            log = _obstacle_follow_drive(ser, np.sign(last_color_offset))
+                            color_dir = 1 if last_color_offset >= 0 else -1
+                            log = _obstacle_follow_drive(ser, color_dir)
 
                             cv2.putText(
                                 vis,
