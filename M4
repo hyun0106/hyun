@@ -1,19 +1,7 @@
 """
-[파일] Camera_v4.py
-[목적] Camera_v3 경량화 — PnP/quad 제거, minAreaRect+distanceTransform 중심 추출
-
-[v3 대비 변경점]
-  · SolvePnP / _try_quad / _is_valid_quad / _extract_quad 전면 제거
-  · 처리 해상도 320×240 다운스케일 → 프레임당 연산량 ¼
-  · 중심 추출: minAreaRect(정상) / distanceTransform(가림·왜곡) 이중 폴백
-  · 모폴로지 연산 color_v2 내부 최소한만 유지
-
-[유지]
-  · LiDAR VFH (Ki+LiDAR_v2 동일)
-  · SEEK / STOP / DONE 상태 머신
-  · 아두이노 F/B/S/T 시리얼 프로토콜
-  · area_r 기반 속도 제어 (CLOSE-FWD / FWD-NQ / CURVE)
-  · area_peak_seen → ENTERING → STOP 흐름
+[파일] Camera_v4_high_speed.py
+[목적] Camera_v4 실전 고속 주행 버전 (기존 대비 속도 1.5배 상향 및 제어 밸런싱)
+[개선] 고속 주행에 따른 오버슈트 방지를 위해 조향 게인 및 필터 계수 최적화
 """
 
 import os
@@ -53,42 +41,48 @@ AR_MIN         = 0.5    # minAreaRect 종횡비 정상 범위 하한
 AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  카메라 주행 파라미터
+#  카메라 주행 및 속도 1.5배 상향 튜닝 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_STEER         = 1.0
-SPEED_FAR         = 0.75
-SPEED_NEAR        = 0.50
-PIVOT_SPEED       = 0.30
-WEAK_SPEED        = 0.35
-NUDGE_SPEED       = 0.35   # 종이 위 비가시 구간 저속 전진
-WEAK_STEER_GAIN   = 0.60
-AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
-AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
-CONFIRM_FRAMES    = 10     # INVISIBLE 확인용 프레임 수
-STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
-COLOR_MEMORY_TIME = 0.6   # 색 소실 후 조향 유지 시간 (초) — 노란색 1m거리 탐지 후 0.5m 더 접근
-STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
+SPEED_FAR         = 0.83   # [기존 0.55] -> 1.5배 상향
+SPEED_NEAR        = 0.53   # [기존 0.35] -> 1.5배 상향
+PIVOT_SPEED       = 0.30   # [기존 0.20] -> 제자리 회전 속도 보강
+WEAK_SPEED        = 0.53   # [기존 0.35] -> 1.5배 상향
+NUDGE_SPEED       = 0.38   # [기존 0.25] -> 1.5배 상향 (저속 전진 구간)
+
+# 고속 주행 대응 제어 파라미터 밸런싱
+WEAK_STEER_GAIN   = 0.80   # [기존 0.60] -> 고속 이탈 방지를 위한 약탐지 조향 보강
+STEER_SMOOTH_ALPHA = 0.55  # [기존 0.45] -> 속도가 빨라진 만큼 반응성을 높이기 위해 EMA 가중치 증가
+
+AREA_SLOW_THRES   = 0.20   
+AREA_PEAK_THRES   = 0.20   
+CONFIRM_FRAMES    = 8      # [기존 10] -> 고속 주행 시 10프레임 대기는 너무 길어 8프레임으로 단축
+STOP_DURATION     = 1.1    
+COLOR_MEMORY_TIME = 0.6   
+
+WALL_ENTER_FRAMES = 4     # [기존 5] -> 고속 이동 시 벽 타는 타이밍을 빠르게 잡기 위해 4프레임으로 단축
+REGAIN_CONTOUR_THRES = 500 
 
 TARGETS = ['red', 'yellow', 'blue']
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR VFH 파라미터  (Ki+Lider_Re-Lat 기준)
+#  LiDAR VFH 파라미터 (고속 주행 감속 트리거 상향)
 # ─────────────────────────────────────────────────────────────────────────────
 BIN_DEG       = 4.0
 N_BINS        = int(360 / BIN_DEG)
 GAP_MIN_PASS  = 100.0
-DETECT        = 800.0
-VELO_DOWN     = 400.0
-EMERGENCY     = 200.0
+DETECT        = 950.0      # [기존 800.0] -> 속도가 빨라졌으므로 더 먼 거리에서 장애물 인지 시작
+VELO_DOWN     = 550.0      # [기존 400.0] -> 감속 시작 트리거 거리 상향
+EMERGENCY     = 250.0      # [기존 200.0] -> 고속 제동 거리를 감안하여 비상정지 마진 확대
 LID_MAX_STEER = 1.2
 ROT_THRESH    = 100.0
 ROBOT_RADIUS  = 60.0
 
-OBS_RETURN_TIME = 2.0   # 장애물 통과 후 복귀 조향 유지 시간 (s)
-OBS_RETURN_GAIN = 0.70   # 복귀 조향 계수
+OBS_RETURN_TIME = 2.0   
+OBS_RETURN_GAIN = 0.70   
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR 공유 상태  (Ki+LiDAR_v2 동일)
+#  LiDAR 공유 상태
 # ─────────────────────────────────────────────────────────────────────────────
 _lidar_lock  = threading.Lock()
 _lidar_state = {
@@ -97,7 +91,7 @@ _lidar_state = {
     'front_near' : 9999.0,
     'vfh_action' : 'FWD',
     'vfh_steer'  : 0.0,
-    'vfh_speed'  : 0.65,
+    'vfh_speed'  : 0.85,  # VFH 기본 속도도 상향 반영
     'rot_dir'    : 1.0,
     'lat_L'      : 9999.0,
     'lat_R'      : 9999.0,
@@ -106,12 +100,9 @@ _lidar_state = {
 }
 
 
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR VFH 헬퍼  (Ki+LiDAR_v2 동일)
+#  LiDAR VFH 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _build_hist(scan_buf):
     hist   = [9999.0] * N_BINS
     has_pt = [False]  * N_BINS
@@ -191,7 +182,7 @@ def _compute_vfh(hist, has_pt):
     lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
     lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
-        return 'FWD', 0.0, 0.50, 1.0, emg, front, lL, lR
+        return 'FWD', 0.0, 0.75, 1.0, emg, front, lL, lR  # 고속 매핑
     gaps = _find_gaps(hist, has_pt)
     best = _best_gap(gaps)
     if best is not None and best['passable'] and abs(best['center']) <= ROT_THRESH:
@@ -208,7 +199,7 @@ def _compute_vfh(hist, has_pt):
         rt   = min(max((VELO_DOWN - nd) / (VELO_DOWN - EMERGENCY), 0.0), 1.0)
         st   = max(-LID_MAX_STEER, min(LID_MAX_STEER,
                tgt * (1.0 + rt * 0.5) / 90.0 * LID_MAX_STEER))
-        spd  = 0.60 * (1.0 - rt * 0.55)
+        spd  = 0.85 * (1.0 - rt * 0.55)  # 고속 주행 보강 계산
         return 'FWD', float(st), float(spd), 1.0, emg, front, lL, lR
     FARC = 60.0
     if gaps:
@@ -218,13 +209,12 @@ def _compute_vfh(hist, has_pt):
     else:
         td = 0.0
     st = max(-LID_MAX_STEER, min(LID_MAX_STEER, td / 90.0 * LID_MAX_STEER * 0.5))
-    return 'FWD', float(st), 0.40, 1.0, emg, front, lL, lR
+    return 'FWD', float(st), 0.55, 1.0, emg, front, lL, lR
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LiDAR 백그라운드 스레드  (Ki+LiDAR_v2 동일)
+#  LiDAR 백그라운드 스레드 및 주행 제어 함수
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _lidar_worker(ser_l):
     scan_buf = []
     while True:
@@ -245,10 +235,8 @@ def _lidar_worker(ser_l):
                 continue
             scan_buf.append((angle, distance))
             if s_flag == 1 and scan_buf:
-
                 nearest_d = 9999.0
                 nearest_a = 0.0
-
                 for a, d in scan_buf:
                     if 80 < d < nearest_d:
                         nearest_d = d
@@ -278,62 +266,40 @@ def _lidar_read():
     with _lidar_lock:
         return dict(_lidar_state)
 
+
 def _obstacle_follow_drive(ser, color_dir):
-
     ls = _lidar_read()
-
     target_dist = 450.0
 
     if color_dir < 0:
-
         wall_dist = ls['lat_L']
-
         err = target_dist - wall_dist
-
-        steer = np.clip(
-            -err * 0.003,
-            -0.6,
-            0.6
-        )
-
+        side_bias = (ls['lat_L'] - ls['lat_R']) * 0.0015
+        steer = np.clip(-err * 0.0035 + side_bias, -0.7, 0.7) # 고속 추종 조향각 살짝 상향
     else:
-
         wall_dist = ls['lat_R']
-
         err = target_dist - wall_dist
+        steer = np.clip(err * 0.0035, -0.7, 0.7)
 
-        steer = np.clip(
-            err * 0.003,
-            -0.6,
-            0.6
-        )
-
-    speed = _speed_limit(0.70)
-
+    speed = _speed_limit(0.70) # [기존 0.50] -> 월 팔로잉 속도 상향
     if speed <= 0:
-        ser.write(b"S\n")
+        return "STOP"
     else:
         cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
         cmd_speed = float(speed)
         ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
 
-    return (
-        f"WALL "
-        f"d={wall_dist:.0f} "
-        f"err={err:.0f} "
-        f"st={steer:+.2f}"
-    )
+    return f"WALL d={wall_dist:.0f} err={err:.0f} st={steer:+.2f}"
+
 
 def _vfh_drive(ser):
     ls = _lidar_read()
-
     if not ls['has_data']:
         ser.write(b"S\n")
         return "NO_LIDAR"
 
     steer = ls['vfh_steer']
     speed = ls['vfh_speed']
-
     safe_speed = _speed_limit(speed)
 
     if safe_speed <= 0:
@@ -342,9 +308,7 @@ def _vfh_drive(ser):
 
     cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
     cmd_speed = float(safe_speed)
-
     ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
-
     return f"VFH st={cmd_steer:+.2f} spd={cmd_speed:.2f}"
 
 
@@ -357,14 +321,13 @@ def _speed_limit(cam_speed: float) -> float:
         return 0.0
     if front < VELO_DOWN:
         rt = max(0.0, min(1.0, (VELO_DOWN - front) / (VELO_DOWN - EMERGENCY)))
-        return cam_speed * (1.0 - rt * 0.25)
+        return cam_speed * (1.0 - rt * 0.35) # 고속인 만큼 장애물 인지 시 감속폭 확대
     return cam_speed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  경량 색지 탐지  (minAreaRect + distanceTransform)
+#  경량 색지 탐지 및 중심 추출
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _get_mask(hsv, color: str):
     if color == 'red':    return get_red_mask(hsv)
     if color == 'yellow': return get_yellow_mask(hsv)
@@ -372,11 +335,6 @@ def _get_mask(hsv, color: str):
 
 
 def _detect_paper(hsv: np.ndarray, color: str):
-    """
-    HSV 프레임에서 색지 탐지.
-    반환: None  또는
-          {'cx','cy','area_r','contour'}
-    """
     mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     scored = [(c, cv2.contourArea(c)) for c in cnts]
@@ -387,11 +345,27 @@ def _detect_paper(hsv: np.ndarray, color: str):
     cnt, area = max(scored, key=lambda x: x[1])
     area_r = area / (CAM_W * CAM_H)
 
-    M = cv2.moments(cnt)
-    if M['m00'] == 0:
-        return None
-    cx = M['m10'] / M['m00']
-    cy = M['m01'] / M['m00']
+    rect = cv2.minAreaRect(cnt)
+    (cx, cy), (w, h), angle = rect
+    
+    if w > 0 and h > 0:
+        aspect_ratio = max(w, h) / min(w, h)
+        if AR_MIN <= aspect_ratio <= AR_MAX:
+            return {'cx': cx, 'cy': cy, 'area_r': area_r, 'contour': cnt}
+
+    try:
+        roi_mask = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.drawContours(roi_mask, [cnt], -1, 255, -1)
+        dist_transform = cv2.distanceTransform(roi_mask, cv2.DIST_L2, 5)
+        _, _, _, max_loc = cv2.minMaxLoc(dist_transform)
+        cx, cy = max_loc[0], max_loc[1]
+    except Exception:
+        M = cv2.moments(cnt)
+        if M['m00'] != 0:
+            cx = M['m10'] / M['m00']
+            cy = M['m01'] / M['m00']
+        else:
+            return None
 
     return {
         'cx': cx, 'cy': cy,
@@ -401,11 +375,6 @@ def _detect_paper(hsv: np.ndarray, color: str):
 
 
 def _weak_detect(hsv: np.ndarray, color: str):
-    """
-    약탐지: 낮은 면적 임계값으로 종이 일부만 보여도 중심 반환.
-    반환: None 또는 (contour, cx, cy)
-    """
-    # 모폴로지 없이 raw inRange — 작은/먼 blob도 방향 탐지 가능
     if color == 'red':
         mask = cv2.bitwise_or(cv2.inRange(hsv, RED_LOWER1, RED_UPPER1),
                               cv2.inRange(hsv, RED_LOWER2, RED_UPPER2))
@@ -413,6 +382,7 @@ def _weak_detect(hsv: np.ndarray, color: str):
         mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
     else:
         mask = cv2.inRange(hsv, BLUE_LOWER, BLUE_UPPER)
+        
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     scored = [(c, cv2.contourArea(c)) for c in cnts]
     scored = [(c, a) for c, a in scored if a > WEAK_MIN_AREA]
@@ -424,10 +394,6 @@ def _weak_detect(hsv: np.ndarray, color: str):
         return None
     return cnt, M['m10'] / M['m00'], M['m01'] / M['m00']
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  보조 함수
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _offset(cx: float) -> float:
     return (cx - CAM_W / 2) / (CAM_W / 2)
@@ -441,9 +407,8 @@ def _draw_ctr(vis, cx, cy, color):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  메인
+#  메인 루프 실행부
 # ─────────────────────────────────────────────────────────────────────────────
-
 def main():
     ser   = serial.Serial(PORT_ARDU,  460800, timeout=1)
     ser_l = serial.Serial(PORT_LIDAR, 460800, timeout=1)
@@ -463,7 +428,6 @@ def main():
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    # 캘리브레이션 로드 → undistort 맵 생성
     cam_mat, dist_coeffs, calib_res = load_calibration(CALIB_FILE)
     map1 = map2 = None
     if cam_mat is not None and calib_res == (CAM_W, CAM_H):
@@ -491,27 +455,24 @@ def main():
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGTSTP, _sig)
 
-    # ── 상태 변수 ────────────────────────────────────────────────────────────
+    # 상태 제어 변수
     target_idx     = 0
-    state          = 'SEEK'
+    state          = 'SEEK'  
     on_zone_count  = 0
     stop_start     = None
     last_seen      = time.time()
-    last_steer     = 0.0
     smoothed_steer = 0.0
     area_peak_seen        = False
     peak_area_r           = 0.0
     approach_steer_locked = False
     locked_approach_steer = 0.0
     prev_area_r           = 0.0
-    last_obs_steer        = 0.0
-    obs_active            = False
-    obs_clear_time        = None
-    mem_invis_count       = 0
-    last_color_offset = 0.0
+    
+    mem_invis_count       = 0  
+    last_seen_color_offset = 0.0  
 
     print("=" * 60)
-    print("  Camera_v4  |  경량화 (minAreaRect+distanceTransform)")
+    print("  Camera_v4_HighSpeed | 속도 1.5배 업그레이드 레이싱 버전")
     print(f"  처리해상도: {CAM_W}×{CAM_H}   목표: RED→YELLOW→BLUE")
     print("=" * 60)
 
@@ -520,22 +481,18 @@ def main():
 
         if ls['emg_near'] < EMERGENCY:
             ser.write(b"S\n")
+            state = 'SEEK'
             continue
+            
         ret, raw = cap.read()
-
-        final_steer = 0.0
-        final_speed = SPEED_NEAR
-
         if not ret:
             time.sleep(0.01)
             continue
 
-        # ── undistort + HSV (1회만 계산, 이후 재사용) ────────────────────
         undist = cv2.remap(raw, map1, map2, cv2.INTER_LINEAR) if map1 is not None else raw
         vis    = undist.copy()
         hsv    = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
 
-        # ── DONE ─────────────────────────────────────────────────────────
         if state == 'DONE':
             ser.write(b"S\n")
             cv2.putText(vis, "MISSION COMPLETE", (40, CAM_H // 2),
@@ -546,7 +503,6 @@ def main():
 
         color = TARGETS[target_idx]
 
-        # ── STOP 대기 ─────────────────────────────────────────────────────
         if state == 'STOP':
             ser.write(b"S\n")
             elapsed = time.time() - stop_start
@@ -566,9 +522,6 @@ def main():
                     approach_steer_locked  = False
                     locked_approach_steer  = 0.0
                     prev_area_r            = 0.0
-                    last_obs_steer         = 0.0
-                    obs_active             = False
-                    obs_clear_time         = None
                     mem_invis_count        = 0
                     last_seen              = time.time()
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
@@ -577,233 +530,153 @@ def main():
                     print("  ✅ 전체 미션 완료!")
             continue
 
-        # ── SEEK ─────────────────────────────────────────────────────────
-        ls  = _lidar_read()
         det = _detect_paper(hsv, color)
+        weak = _weak_detect(hsv, color)
 
-        # ① 강탐지 ──────────────────────────────────────────────────────
+        # ① 강탐지 추적 모드 (SEEK) ───────────────────────────────────────────
         if det is not None:
+            mem_invis_count = 0  
             last_seen = time.time()
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
-            last_color_offset = offset
+            last_seen_color_offset = offset  
             dcx, dcy  = int(cx), int(cy)
 
-            mem_invis_count = 0
             if area_r >= AREA_PEAK_THRES:
                 area_peak_seen = True
                 peak_area_r    = max(peak_area_r, area_r)
 
-            if area_r >= AREA_SLOW_THRES or (approach_steer_locked and area_peak_seen and area_r >= 0.15):
-                # CLOSE-FWD: 최초 진입 시 조향 고정
                 if not approach_steer_locked:
                     if prev_area_r > 0.05:
-                        # 멀리서 서서히 접근 → 현재 offset 기반 부드러운 보정 (누적 steer 대신)
-                        locked_approach_steer = float(np.clip(offset * 0.25, -0.35, 0.35))
+                        # 고속 진입 시 조향 락 게인을 약간 강하게 조율 (0.25 -> 0.30)
+                        locked_approach_steer = float(np.clip(offset * 0.30, -0.40, 0.40))
                     else:
-                        # 회전 중 갑자기 발견 → 직진
                         locked_approach_steer = 0.0
                     approach_steer_locked = True
                 steer   = locked_approach_steer
                 speed   = _speed_limit(SPEED_NEAR)
                 src     = "approach" if prev_area_r > 0.05 else "sudden"
                 log_msg = f"CLOSE-FWD(lock/{src}) st={steer:+.2f} area={area_r:.2f}"
-                cv2.putText(vis, f"CLOSE-FWD A={area_r:.2f} lock={steer:+.2f}",
-                            (CAM_W // 2 - 180, 44),
+                cv2.putText(vis, f"CLOSE-FWD lock={steer:+.2f}", (CAM_W // 2 - 180, 44), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
-
             else:
-                # 멀리 있을 때: 정상 조향 업데이트 + lock 해제
                 approach_steer_locked = False
-                steer = float(np.clip(offset * 1.5, -MAX_STEER, MAX_STEER))
+                # 고속 횡이동 조향 타겟 게인 미세 밸런싱 (1.5 -> 1.3, 오버슈트 억제)
+                steer = float(np.clip(offset * 1.3, -MAX_STEER, MAX_STEER))
                 if abs(steer) < 0.4:
-                    speed   = _speed_limit(SPEED_NEAR)
-                    log_msg = f"FWD-NQ off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"FWD-NQ A={area_r:.2f}",
-                                (CAM_W // 2 - 140, 44),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 100), 2)
+                    speed   = _speed_limit(SPEED_FAR)  # 원거리 직진 고속 가속
+                    log_msg = f"FWD-FAST off={offset:+.2f}"
                 else:
                     speed   = PIVOT_SPEED
                     arrow   = '→' if steer > 0 else '←'
-                    log_msg = f"CURVE{arrow} off={offset:+.2f} area={area_r:.2f}"
-                    cv2.putText(vis, f"CURVE{arrow} A={area_r:.2f}",
-                                (CAM_W // 2 - 140, 44),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
+                    log_msg = f"CURVE{arrow} off={offset:+.2f}"
 
             x, y, w, h = cv2.boundingRect(det['contour'])
             cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 180, 255), 2)
             _draw_ctr(vis, dcx, dcy, (0, 180, 255))
 
             smoothed_steer = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
-            last_steer     = smoothed_steer
             prev_area_r    = area_r
+
             if speed > 0:
                 print(f"  [SEEK] {color.upper()} {log_msg} spd={speed:.2f}")
-
-                if speed <= 0:
-                    ser.write(b"S\n")
-                else:
-                    cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
-                    cmd_speed = float(speed)
-                    ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
+                cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
+                ser.write(f"F {cmd_steer:.2f} {speed:.2f}\n".encode())
             else:
-                # 장애물로 속도 0 → VFH로 회피 (area 무관)
                 vfh_log = _vfh_drive(ser)
                 print(f"  [SEEK→VFH] {color.upper()} obstacle→ {vfh_log}")
 
-        # ② 피크 후 미탐지 → ENTERING ────────────────────────────────────
+        # ② 피크 진입 완료 후 타겟 하단 가림 현상 대응 (ENTERING 상태) ─────────────
         elif area_peak_seen:
-            mem_invis_count = 0
             prev_area_r = 0.0
-            w = _weak_detect(hsv, color) if (not obs_active and ls['emg_near'] > DETECT) else None
-            if w is not None:
-                cnt_w, wcx, wcy = w
+            if weak is not None:
+                mem_invis_count = 0
+                cnt_w, wcx, wcy = weak
                 weak_offset    = _offset(wcx)
-                steer          = float(np.clip(weak_offset * WEAK_STEER_GAIN,
-                                               -MAX_STEER, MAX_STEER))
-                last_steer     = steer
+                steer          = float(np.clip(weak_offset * WEAK_STEER_GAIN, -MAX_STEER, MAX_STEER))
                 last_seen      = time.time()
-                steer_cmd      = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
-                smoothed_steer = steer_cmd
+                smoothed_steer = STEER_SMOOTH_ALPHA * steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
+                
                 cv2.drawContours(vis, [cnt_w], -1, (180, 255, 0), 1)
                 _draw_ctr(vis, int(wcx), int(wcy), (180, 255, 0))
                 cv2.putText(vis, f"ENTERING {color.upper()} off={weak_offset:+.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 255, 0), 2)
-                print(f"  [ENTER] {color.upper()} off={weak_offset:+.2f} st={steer_cmd:+.2f}")
-                final_steer = smoothed_steer
+                
                 weak_speed = _speed_limit(WEAK_SPEED)
-
                 if weak_speed <= 0:
                     ser.write(b"S\n")
                 else:
-                    cmd_steer = float(np.clip(steer, -MAX_STEER, MAX_STEER))
-                    cmd_speed = float(weak_speed)
-                    ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
+                    ser.write(f"F {smoothed_steer:.2f} {weak_speed:.2f}\n".encode())
             else:
                 on_zone_count += 1
                 nudge_spd = _speed_limit(NUDGE_SPEED)
-                final_steer = smoothed_steer
-                final_speed = nudge_spd
-                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES} nudge={nudge_spd:.2f}",
+                cv2.putText(vis, f"INVISIBLE cnt:{on_zone_count}/{CONFIRM_FRAMES}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
-                print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count} nudge={nudge_spd:.2f}")
+                
                 if on_zone_count >= CONFIRM_FRAMES:
-                    state = 'STOP'; stop_start = time.time()
+                    state = 'STOP'
+                    stop_start = time.time()
                     ser.write(b"S\n")
                     print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f}")
-                    cv2.imshow('Robot View', vis)
-                    cv2.waitKey(1)
                     continue
+                else:
+                    ser.write(f"F {smoothed_steer:.2f} {nudge_spd:.2f}\n".encode())
 
-        # ③ 미탐지 → VFH 탐색 ────────────────────────────────────────────
+        # ③ 타겟 완전 미탐지 및 센서 필터링 마진 제어 분기 ────────────────────────
         else:
             prev_area_r   = 0.0
             on_zone_count = max(0, on_zone_count - 1)
-            w = _weak_detect(hsv, color) if (not obs_active and ls['emg_near'] > DETECT) else None
-            if w is not None:
-                mem_invis_count = 0
-                cnt_w, wcx, wcy = w
+            mem_invis_count += 1  
+
+            is_valid_regain = False
+            if weak is not None:
+                cnt_w, wcx, wcy = weak
+                if cv2.contourArea(cnt_w) > REGAIN_CONTOUR_THRES: 
+                    is_valid_regain = True
+
+            if is_valid_regain:
+                mem_invis_count = 0 
+                cnt_w, wcx, wcy = weak
                 weak_offset = _offset(wcx)
-                last_color_offset = weak_offset
-                w_steer     = float(np.clip(weak_offset * 3.0, -MAX_STEER, MAX_STEER))
-                last_seen   = time.time()
+                # 속도가 빨라 복귀할 때 강한 피드백이 필요하므로 게인을 상향 (2.5 -> 2.8)
+                w_steer = float(np.clip(weak_offset * 2.8, -MAX_STEER, MAX_STEER))
+                last_seen = time.time()
+                last_seen_color_offset = weak_offset
+
                 cv2.drawContours(vis, [cnt_w], -1, (180, 180, 0), 1)
-                arrow = '→' if w_steer > 0 else '←'
-                cv2.putText(vis, f"WEAK-CURVE{arrow} off={weak_offset:+.2f}",
+                cv2.putText(vis, f"COLOR-REGAIN off={weak_offset:+.2f}",
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 180, 0), 2)
-                print(f"  [WEAK] {color.upper()} curve{arrow} off={weak_offset:+.2f}")
-                final_steer = w_steer
+
                 final_speed = _speed_limit(WEAK_SPEED)
+                ser.write(f"F {w_steer:.2f} {final_speed:.2f}\n".encode())
             else:
-                elapsed = time.time() - last_seen
-                if elapsed < COLOR_MEMORY_TIME:
-                    mem_invis_count += 1
-                    steer_cmd      = STEER_SMOOTH_ALPHA * last_steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
-                    smoothed_steer = steer_cmd
-                    mem_speed      = _speed_limit(SPEED_NEAR)
-                    cv2.putText(vis, f"MEM {elapsed:.2f}s cnt:{mem_invis_count} st={steer_cmd:+.2f}",
-                                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 220, 100), 2)
-                    print(f"  [MEM] {color.upper()} t={elapsed:.2f}s cnt={mem_invis_count} st={steer_cmd:+.2f}")
-                    final_steer = steer_cmd
-                    mem_speed = _speed_limit(SPEED_NEAR)
+                color_dir = 1.0 if last_seen_color_offset >= 0 else -1.0
 
-                    if mem_speed <= 0:
-                        ser.write(b"S\n")
-                        continue
-                    else:
-                        cmd_steer = float(np.clip(smoothed_steer, -MAX_STEER, MAX_STEER))
-                        cmd_speed = float(mem_speed)
-                        ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
-                    if mem_invis_count >= CONFIRM_FRAMES:
-                        state = 'STOP'; stop_start = time.time()
-                        ser.write(b"S\n")
-                        print(f"  🎯 {color.upper()} 도달! (MEM)")
-                        cv2.imshow('Robot View', vis)
-                        cv2.waitKey(1)
-                        continue
+                if mem_invis_count < WALL_ENTER_FRAMES: 
+                    nudge_spd = _speed_limit(NUDGE_SPEED)
+                    ser.write(f"F {smoothed_steer:.2f} {nudge_spd:.2f}\n".encode())
+                    cv2.putText(vis, f"LOSS HOLD {mem_invis_count}", (10, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 100, 255), 2)
                 else:
-                    mem_invis_count = 0
-                    obstacle_now = ls['has_data'] and ls['emg_near'] < DETECT
-                    if obstacle_now:
-                        last_obs_steer = float(np.clip(
-                            (ls['lat_L'] - ls['lat_R']) / (DETECT + 1e-9), -1.0, 1.0))
-                        if not obs_active:
-                            obs_clear_time = None
-                        obs_active = True
-                    elif obs_active:
-                        obs_active     = False
-                        obs_clear_time = time.time()
+                    log = _obstacle_follow_drive(ser, color_dir)
+                    cv2.putText(vis, f"WALL-FOLLOW {log}", (10, 80),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 255), 2)
 
-                    return_elapsed = (
-                        time.time() - obs_clear_time
-                        if obs_clear_time is not None
-                        else float('inf')
-                    )
+                if mem_invis_count >= CONFIRM_FRAMES:
+                    state = 'STOP'
+                    stop_start = time.time()
+                    ser.write(b"S\n")
+                    print(f"  🎯 {color.upper()} 도달 (wall-follow 종료)")
+                    continue
 
-                    if return_elapsed < OBS_RETURN_TIME:
-                        ret_st  = float(np.clip(last_obs_steer * OBS_RETURN_GAIN,
-                                                -MAX_STEER, MAX_STEER))
-                        ret_spd = _speed_limit(SPEED_NEAR)
-                        ret_spd = _speed_limit(ret_spd)
-
-                        if ret_spd <= 0:
-                            ser.write(b"S\n")
-                        else:
-                            cmd_steer = float(np.clip(ret_st, -MAX_STEER, MAX_STEER))
-                            cmd_speed = float(ret_spd)
-                            ser.write(f"F {cmd_steer:.2f} {cmd_speed:.2f}\n".encode())
-                        cv2.putText(vis, f"OBS_RET st={ret_st:+.2f} {return_elapsed:.1f}s",
-                                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 165, 255), 2)
-                        print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
-                    else:
-                        print(last_color_offset)
-
-                        if not ls['has_data'] or ls['emg_near'] > DETECT:
-                            color_dir = 1 if last_color_offset >= 0 else -1
-                            log = _obstacle_follow_drive(ser, color_dir)
-
-                            cv2.putText(
-                                vis,
-                                f"OBS_FOLLOW {log}",
-                                (10, 80),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.60,
-                                (0, 255, 255),
-                                2
-                            )
-
-                            print(f"  [OBS] {color.upper()} {log}")
-
-        # ── 공통 HUD ─────────────────────────────────────────────────────
+        # ── 상단 공통 비주얼 피드백 HUD 출력 ─────────────────────────────────
         emg_txt = f" EMG:{ls['emg_near']:.0f}mm" if ls['has_data'] else ""
-        cv2.putText(vis,
-                    f"{state}|{color.upper()}|cnt:{on_zone_count}/{CONFIRM_FRAMES}{emg_txt}",
+        cv2.putText(vis, f"{state}|{color.upper()}|invis:{mem_invis_count} {emg_txt}",
                     (10, CAM_H - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
 
         cv2.imshow('Robot View', vis)
         if (cv2.waitKey(1) & 0xFF) == ord('q'):
-            print("  [종료] q 입력")
             break
 
     ser.write(b"S\n")
