@@ -283,40 +283,55 @@ def _obstacle_follow_drive(ser, color_dir):
     ls = _lidar_read()
 
     target_dist = 450.0
+    MIN_SAFE_DIST = 300.0   # 🚨 벽에 "비비는 것" 방지 하한
+    MAX_SAFE_DIST = 650.0   # 🚨 너무 멀어지는 것도 방지
 
-    if color_dir < 0:
+    front = ls['front_near']
 
-        wall_dist = ls['lat_L']
-
-        err = target_dist - wall_dist
-
-        steer = np.clip(
-            -err * 0.003,
-            -0.6,
-            0.6
-        )
-
-    else:
-
-        wall_dist = ls['lat_R']
-
-        err = target_dist - wall_dist
-
-        steer = np.clip(
-            err * 0.003,
-            -0.6,
-            0.6
-        )
+    # ─────────────────────────────
+    # 1. 전방 충돌 방지 (유지)
+    # ─────────────────────────────
+    if front < 200.0:
+        ser.write(b"F 0.0 0.0\n")
+        return f"EMG STOP front={front:.0f}"
 
     speed = 0.50
 
-    ser.write(
-        f"F {steer:.2f} {speed:.2f}\n".encode()
-    )
+    # ─────────────────────────────
+    # 2. wall 선택
+    # ─────────────────────────────
+    wall_dist = ls['lat_L'] if color_dir < 0 else ls['lat_R']
+
+    err = target_dist - wall_dist
+
+    # ─────────────────────────────
+    # 3. 🚨 거리 구간 제어 (핵심)
+    # ─────────────────────────────
+
+    # 너무 가까움 → 벽에서 강제 이탈
+    if wall_dist < MIN_SAFE_DIST:
+        steer = 0.6 if color_dir < 0 else -0.6
+        speed = 0.35
+
+    # 너무 멀어짐 → 벽 쪽으로 복귀
+    elif wall_dist > MAX_SAFE_DIST:
+        steer = -0.4 if color_dir < 0 else 0.4
+        speed = 0.45
+
+    # 정상 구간 → P 제어
+    else:
+        steer = np.clip(
+            -err * 0.0035,
+            -0.6,
+            0.6
+        )
+
+    ser.write(f"F {steer:.2f} {speed:.2f}\n".encode())
 
     return (
-        f"WALL "
-        f"d={wall_dist:.0f} "
+        f"WALL-FOLLOW "
+        f"front={front:.0f} "
+        f"wall={wall_dist:.0f} "
         f"err={err:.0f} "
         f"st={steer:+.2f}"
     )
@@ -757,3 +772,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
