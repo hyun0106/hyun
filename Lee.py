@@ -1,5 +1,5 @@
 """
-[파일] Camera_v6_side_lidar_search.py
+[파일] Camera_v11_arc_vfh_wall_follow.py
 [목적] Camera_v3 경량화 — PnP/quad 제거, minAreaRect+distanceTransform 중심 추출
 
 [v3 대비 변경점]
@@ -49,8 +49,6 @@ CALIB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # ─────────────────────────────────────────────────────────────────────────────
 MIN_AREA       = 1000   # 강탐지 최소 컨투어 면적 (640×480 기준 px²)
 WEAK_MIN_AREA  = 200    # 약탐지 최소 컨투어 면적
-YELLOW_MIN_AREA      = 700   # 노란색 강탐지 전용: 너무 낮추면 잡음 추적 가능
-YELLOW_WEAK_MIN_AREA = 150   # 노란색 약탐지 전용: 너무 낮추면 잡음 추적 가능
 AR_MIN         = 0.5    # minAreaRect 종횡비 정상 범위 하한
 AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
 
@@ -58,18 +56,17 @@ AR_MAX         = 2.0    # minAreaRect 종횡비 정상 범위 상한
 #  카메라 주행 파라미터
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_STEER         = 1.0
-SPEED_FAR         = 0.70
-SPEED_NEAR        = 0.45
+SPEED_FAR         = 0.50
+SPEED_NEAR        = 0.40
 PIVOT_SPEED       = 0.28
 WEAK_SPEED        = 0.42
 NUDGE_SPEED       = 0.35   # 종이 위 비가시 구간 저속 전진
 WEAK_STEER_GAIN   = 0.60
 AREA_SLOW_THRES   = 0.20   # 근접 판단 면적비 (PROC 기준)
 AREA_PEAK_THRES   = 0.20   # area_peak_seen 세팅 면적비
-ARRIVAL_CY_RATIO  = 0.60   # 도착 판정: 마지막 강탐지 중심 cy가 화면 아래쪽 60% 이후여야 함
 CONFIRM_FRAMES    = 10     # INVISIBLE 확인용 프레임 수
 STOP_DURATION     = 1.1    # 정지 대기 시간 (초)
-COLOR_MEMORY_TIME = 1.00   # 색지를 한 번 본 뒤 잠깐 놓쳤을 때만 유지하는 시간 (초)
+COLOR_MEMORY_TIME = 1.20   # 색 소실 후 조향 유지 시간 (초). 길면 경기장 밖으로 빠질 수 있어 1.2초 권장
 STEER_SMOOTH_ALPHA = 0.45  # EMA 평활화 계수
 
 TARGETS = ['red', 'yellow', 'blue']
@@ -91,18 +88,28 @@ OBS_RETURN_TIME = 10.0   # 장애물 통과 후 복귀 조향 유지 시간 (s)
 OBS_RETURN_GAIN = 0.70   # 복귀 조향 계수
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SEARCH_UNSEEN 파라미터 (2m×2m 경기장, RC카 20cm×20cm 기준)
+#  색지 미탐색 시 Obstacle-wall following 탐색 파라미터
+#  A4 박스 뭉치를 임시 벽처럼 보고, 너무 멀리 경기장 밖으로 빠지는 것을 막는다.
 # ─────────────────────────────────────────────────────────────────────────────
-SEARCH_SPEED           = 0.28   # 목표 색지를 아직 한 번도 못 봤을 때 제한형 VFH 이동 속도 상한
-SEARCH_MOVE_TIME       = 0.70   # LiDAR 회피를 적용하며 짧게 위치 변경하는 시간(s)
-SEARCH_TURN_TIME       = 0.50   # 같은 방향 제자리 회전 시간(s). 1초≈180도 체감 기준 첫 테스트값
-SEARCH_TURN_RESELECT   = 2      # 같은 방향 회전을 이 횟수만큼 한 뒤 LiDAR로 방향 재선택
-SEARCH_VFH_STEER_LIMIT = 0.30   # 탐색 이동 중 VFH 조향 제한. 너무 크면 지그재그 증가
-FRONT_BLOCK_DIST       = 330.0  # 이보다 앞이 가까우면 탐색 이동 대신 회전
-FRONT_HARD_BLOCK_DIST  = 230.0  # 이보다 앞이 가까우면 즉시 전진 중단
-SIDE_TURN_BLOCK_DIST   = 220.0  # 회전하려는 쪽 측면이 이보다 가까우면 반대쪽 고려
-SEARCH_TURN_CMD_RIGHT  = 1      # Arduino T 명령 기준: 오른쪽 제자리 회전값. 반대면 1/-1만 바꾸기
-SEARCH_TURN_CMD_LEFT   = -1     # Arduino T 명령 기준: 왼쪽 제자리 회전값
+TARGET_OBS_DIST   = 280.0  # LiDAR 기준 목표 측면 거리(mm). 차체 기준 여유 약 180mm
+OBS_FIND_DIST     = 500.0  # 이 거리 안에 있는 좌/우 물체를 기준 장애물로 사용
+OBS_FOLLOW_SPEED  = 0.40   # 장애물 기준 탐색 속도
+OBS_STEER_LIMIT   = 0.20   # 장애물 추종 조향 제한. 지그재그 방지를 위해 약하게 사용
+FRONT_BLOCK_DIST  = 300.0  # 전방 이 거리 이하면 전진 금지
+
+# 아래 값은 튜닝 대상이라기보다 흔들림 방지용 내부 고정값
+DEAD_BAND         = 50.0   # TARGET±50mm 범위에서는 그냥 직진
+SIDE_KEEP_TIME    = 1.2    # 한 번 잡은 좌/우 기준을 최소 유지하는 시간
+FOLLOW_LOST_TIME  = 0.7    # 박스 끝/모서리에서 기준이 잠깐 사라져도 유지하는 시간
+BLOCK_TURN_TIME   = 0.25   # 앞이 막혔을 때 더 넓은 쪽으로 짧게 피벗하는 시간
+LOST_SIDE_STEER   = 0.10   # 기준 장애물이 잠깐 사라졌을 때 기존 쪽으로 약하게 붙는 조향
+BACKUP_SEARCH_SPEED = 0.30 # 과거 제한형 VFH 호환용. v10 기본 탐색에서는 일반 VFH/원호 탐색을 우선 사용
+START_GRACE_TIME    = 0.50 # 시작 직후 이 시간 동안은 경기장 이탈 원호 복귀 판단 금지
+START_EMPTY_SPEED   = 0.45 # 시작 grace 중 색지/장애물이 모두 없을 때 직진 속도
+OUTSIDE_CONFIRM_TIME = 0.50 # 양쪽 측면 장애물이 모두 없는 상태가 이 시간 지속되면 이탈 의심
+SEARCH_ARC_STEER    = 0.40 # 이탈 의심 시 항상 우회전 원호 복귀. 기존 0.30보다 강하게
+SEARCH_ARC_SPEED    = 0.35 # 원호 복귀 속도
+ARC_VFH_TRIGGER     = 500.0 # 원호 복귀 중 이 거리 안에 장애물이 있으면 일반 VFH 안전회피
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LiDAR 공유 상태  (Ki+LiDAR_v2 동일)
@@ -201,8 +208,8 @@ def _best_gap(gaps):
 def _compute_vfh(hist, has_pt):
     emg   = _nearest(hist, has_pt, 0.0,   arc_half=80)
     front = _nearest(hist, has_pt, 0.0,   arc_half=35)
-    lL    = _nearest(hist, has_pt, 270.0, arc_half=75)
-    lR    = _nearest(hist, has_pt,  90.0, arc_half=75)
+    lL    = _nearest(hist, has_pt, 270.0, arc_half=45)
+    lR    = _nearest(hist, has_pt,  90.0, arc_half=45)
     if not any(has_pt):
         return 'FWD', 0.0, 0.50, 1.0, emg, front, lL, lR
     gaps = _find_gaps(hist, has_pt)
@@ -303,178 +310,222 @@ def _speed_limit(cam_speed: float) -> float:
     return cam_speed
 
 
-def _limited_vfh_drive(ser, speed_cap=SEARCH_SPEED, steer_limit=SEARCH_VFH_STEER_LIMIT):
-    """
-    SEARCH_UNSEEN에서 쓰는 제한형 VFH.
-    기존 VFH처럼 넓은 빈 공간으로 빠르게 나가지 않도록 속도와 조향을 제한한다.
+def _reset_follow_ctrl(ctrl: dict):
+    """색지를 오래 못 봤을 때 사용하는 장애물 기준 탐색 상태 초기화."""
+    ctrl.clear()
+    ctrl.update({
+        'mode': 'INIT',          # INIT / FOLLOW_LEFT / FOLLOW_RIGHT
+        'side': None,            # 'LEFT' 또는 'RIGHT'
+        'side_start': 0.0,
+        'lost_start': None,
+        'last_steer': 0.0,
+        'outside_empty_start': None,  # 양쪽 측면 장애물 없음 지속 시간 측정용
+    })
+
+
+def _arc_search_drive(ser):
+    """양쪽 측면에 기준 장애물이 없을 때 사용하는 기본 탐색.
+
+    원칙:
+      - 주변이 비어 있으면 항상 우회전 원호 탐색(F +0.25 0.28)
+      - 원호 탐색 중 전방/근전방 장애물이 들어오면 일반 VFH로 즉시 안전회피
+      - LiDAR가 없으면 아주 느린 우회전 원호로 카메라 시야만 바꾼다.
     """
     ls = _lidar_read()
     if not ls['has_data']:
-        ser.write(f"F 0.00 {SEARCH_SPEED:.2f}\n".encode())
-        return "LIMITED_VFH no lidar"
+        ser.write(f"F {SEARCH_ARC_STEER:.2f} 0.20\n".encode())
+        return f"ARC_SEARCH no lidar st={SEARCH_ARC_STEER:+.2f} spd=0.20"
 
-    if ls['front_near'] <= FRONT_HARD_BLOCK_DIST:
-        # 탐색 이동 중 전방이 너무 가까우면 전진하지 않는다.
-        # 이 함수 안에서 회전까지 해버리면 탐색 FSM과 충돌하므로 정지만 수행한다.
-        ser.write(b"S\n")
-        return f"LIMITED_VFH BLOCKED_STOP F={ls['front_near']:.0f} L={ls['lat_L']:.0f} R={ls['lat_R']:.0f}"
+    # 전방 또는 근전방에 장애물이 잡히면 원호 탐색보다 VFH 회피를 우선한다.
+    # emg_near는 ±80도 넓은 전방, front_near는 ±35도 정면 영역이다.
+    if ls['front_near'] < ARC_VFH_TRIGGER or ls['emg_near'] < ARC_VFH_TRIGGER:
+        return _vfh_drive(ser) + " [ARC_SAFE]"
+
+    speed = _speed_limit(SEARCH_ARC_SPEED)
+    ser.write(f"F {SEARCH_ARC_STEER:.2f} {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+    return f"ARC_SEARCH_RIGHT st={SEARCH_ARC_STEER:+.2f} spd={speed:.2f} F={ls['front_near']:.0f} EMG={ls['emg_near']:.0f}"
+
+
+def _general_vfh_drive(ser):
+    """양쪽 장애물이 모두 잡힌 통로 상황에서 사용하는 일반 VFH.
+    제한형 VFH처럼 조향/속도를 자르지 않고, VFH가 고른 gap을 그대로 따른다.
+    """
+    return _vfh_drive(ser)
+
+
+def _search_without_wall_drive(ser, follow_ctrl: dict, mission_elapsed: float, ls=None):
+    """wall-follow를 쓰지 않는 상황의 선택기.
+
+    핵심 변경점:
+      - 시작 후 START_GRACE_TIME 동안은 경기장 이탈 원호 복귀를 금지한다.
+      - 양쪽 측면 장애물이 모두 안 보이는 상태가 OUTSIDE_CONFIRM_TIME 이상 지속될 때만
+        경기장 밖/빈 공간 이탈로 의심하고 우회전 원호 복귀를 수행한다.
+      - 그 전까지는 START_EMPTY_SPEED로 직진한다.
+    """
+    now = time.time()
+    ls = _lidar_read() if ls is None else ls
+
+    if not ls['has_data']:
+        follow_ctrl['outside_empty_start'] = None
+        ser.write(f"F 0.00 {min(BACKUP_SEARCH_SPEED, 0.25):.2f}\n".encode())
+        return "NO_LIDAR slow fwd"
+
+    left_seen = ls['lat_L'] < OBS_FIND_DIST
+    right_seen = ls['lat_R'] < OBS_FIND_DIST
+
+    if left_seen and right_seen:
+        follow_ctrl['outside_empty_start'] = None
+        return _general_vfh_drive(ser)
+
+    if (not left_seen) and (not right_seen):
+        # 시작 직후에는 아직 경기장을 벗어났을 가능성이 낮으므로 이탈 원호 복귀만 금지.
+        if mission_elapsed < START_GRACE_TIME:
+            follow_ctrl['outside_empty_start'] = None
+            speed = _speed_limit(START_EMPTY_SPEED)
+            ser.write(f"F 0.00 {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+            return f"START_EMPTY_FWD t={mission_elapsed:.2f}/{START_GRACE_TIME:.2f} spd={speed:.2f}"
+
+        if follow_ctrl.get('outside_empty_start') is None:
+            follow_ctrl['outside_empty_start'] = now
+
+        empty_elapsed = now - follow_ctrl['outside_empty_start']
+        if empty_elapsed < OUTSIDE_CONFIRM_TIME:
+            speed = _speed_limit(START_EMPTY_SPEED)
+            ser.write(f"F 0.00 {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+            return f"EMPTY_CONFIRM {empty_elapsed:.2f}/{OUTSIDE_CONFIRM_TIME:.2f} FWD spd={speed:.2f}"
+
+        return _arc_search_drive(ser) + f" [OUTSIDE {empty_elapsed:.2f}s]"
+
+    # 한쪽만 장애물이 보이는 경우는 상위 상태가 wall-follow로 재선택하도록 넘긴다.
+    follow_ctrl['outside_empty_start'] = None
+    speed = _speed_limit(START_EMPTY_SPEED)
+    ser.write(f"F 0.00 {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+    return f"ONE_SIDE_PENDING_FWD spd={speed:.2f}"
+
+
+def _limited_vfh_drive(ser, speed_cap=BACKUP_SEARCH_SPEED, steer_limit=0.25):
+    """구버전 호환용 함수. v10 기본 탐색에서는 사용하지 않는 것을 원칙으로 한다."""
+    ls = _lidar_read()
+    if not ls['has_data']:
+        ser.write(f"F 0.00 {min(speed_cap, 0.25):.2f}\n".encode())
+        return "BACKUP no lidar: slow fwd"
 
     st = float(np.clip(ls['vfh_steer'], -steer_limit, steer_limit))
     spd = min(float(ls['vfh_speed']), speed_cap)
-
     ser.write(f"F {st:.2f} {spd:.2f}\n".encode())
-    return f"LIMITED_VFH st={st:+.2f} spd={spd:.2f} F={ls['front_near']:.0f} L={ls['lat_L']:.0f} R={ls['lat_R']:.0f}"
+    return f"BACKUP_VFH st={st:+.2f} spd={spd:.2f} F={ls['front_near']:.0f} L={ls['lat_L']:.0f} R={ls['lat_R']:.0f}"
 
 
-def _reset_search_ctrl(search_ctrl: dict):
+def _choose_follow_side(ls):
+    """한쪽에만 A4 박스 뭉치가 있을 때만 wall-follow를 선택한다.
+
+    - 왼쪽만 장애물: LEFT wall-follow
+    - 오른쪽만 장애물: RIGHT wall-follow
+    - 양쪽 모두 장애물: 통로 상황이므로 일반 VFH에 맡김
+    - 양쪽 모두 없음: 기준 벽이 없으므로 우회전 원호 탐색을 수행
     """
-    SEARCH_UNSEEN 상태 초기화.
+    left_seen = ls['lat_L'] < OBS_FIND_DIST
+    right_seen = ls['lat_R'] < OBS_FIND_DIST
 
-    핵심 아이디어:
-    - 목표 색지를 아직 한 번도 못 봤을 때만 사용한다.
-    - LiDAR 좌/우 거리 중 더 넓은 쪽을 한 번 선택한다.
-    - 선택한 방향을 유지하면서 [제한형 VFH 이동 → 제자리 회전]을 반복한다.
-    - 같은 방향 회전을 SEARCH_TURN_RESELECT회 반복하면 방향을 다시 선택한다.
+    if left_seen and not right_seen:
+        return 'LEFT'
+    if right_seen and not left_seen:
+        return 'RIGHT'
+    return None
+
+
+def _obstacle_wall_follow_search(ser, follow_ctrl: dict, mission_elapsed: float):
     """
-    search_ctrl['phase'] = 'SELECT_DIR'
-    search_ctrl['phase_start'] = time.time()
-    search_ctrl['turn_dir'] = 0       # +1: 오른쪽, -1: 왼쪽
-    search_ctrl['turn_count'] = 0
+    색지를 오래 못 봤을 때의 탐색 주행.
 
-
-def _select_search_turn_dir(ls: dict, prev_dir: int = 0) -> int:
-    """
-    LiDAR 좌/우 측면 거리로 탐색 회전 방향 선택.
-    왼쪽 공간이 더 넓으면 -1, 오른쪽 공간이 더 넓으면 +1.
-    두 값이 거의 비슷하면 이전 방향을 유지한다.
-    """
-    left = ls['lat_L']
-    right = ls['lat_R']
-
-    # 좌우 차이가 작으면 방향을 자주 바꾸지 않기 위해 이전 방향 유지
-    if prev_dir in (-1, 1) and abs(left - right) < 120.0:
-        return prev_dir
-
-    if left > right:
-        return -1
-    return +1
-
-
-def _turn_in_place_search(ser, turn_dir: int):
-    """
-    탐색용 제자리 회전 명령.
-    turn_dir: +1 오른쪽, -1 왼쪽.
-    Arduino 쪽 T 부호가 반대면 SEARCH_TURN_CMD_RIGHT/LEFT만 바꾸면 된다.
-    """
-    cmd = SEARCH_TURN_CMD_RIGHT if turn_dir > 0 else SEARCH_TURN_CMD_LEFT
-    ser.write(f"T {cmd}\n".encode())
-
-
-def _search_unseen_scan_obstacle_drive(ser, search_ctrl: dict):
-    """
-    목표 색지를 아직 한 번도 못 봤을 때 사용하는 탐색 주행.
-
-    기존 방식:
-      - F 큰 조향으로 우/좌 스캔
-      - 장애물 기준 이동
-      → 위치가 계속 변하고 지그재그가 생기기 쉬움
-
-    새 방식:
-      1) LiDAR 좌/우 중 더 넓은 쪽을 탐색 회전 방향으로 선택
-      2) 제한형 VFH로 짧게 이동하되, 전방이 가까우면 이동 중단
-      3) 같은 방향으로 제자리 회전해 카메라 시야를 크게 바꿈
-      4) 위 과정을 반복
-      5) 같은 방향 회전을 일정 횟수 반복하면 LiDAR로 방향 재선택
-
-    색지가 강/약탐지되면 main loop에서 이 함수보다 먼저 TRACK으로 넘어가므로,
-    색지 발견 시에는 즉시 직진 추적이 가능하다.
+    핵심:
+      1) 한쪽에만 A4 박스 뭉치가 있을 때만 임시 벽으로 따라감
+      2) 양쪽 모두 장애물이 있으면 통로 상황으로 보고 일반 VFH 사용
+      3) 양쪽 모두 없으면 항상 우회전 원호 탐색 + VFH 안전회피 사용
+      4) 전방 막힘에 대한 강제 피벗(BLOCKED_TURN)은 사용하지 않음
+      5) TARGET_OBS_DIST±DEAD_BAND 안이면 직진, 벗어나면 약하게 보정
     """
     now = time.time()
     ls = _lidar_read()
-
-    if 'phase' not in search_ctrl or 'phase_start' not in search_ctrl:
-        _reset_search_ctrl(search_ctrl)
-
-    phase = search_ctrl['phase']
-    elapsed = now - search_ctrl['phase_start']
-
-    def set_phase(next_phase: str):
-        search_ctrl['phase'] = next_phase
-        search_ctrl['phase_start'] = time.time()
+    if 'mode' not in follow_ctrl:
+        _reset_follow_ctrl(follow_ctrl)
 
     if not ls['has_data']:
-        # LiDAR가 없으면 멀리 나가지 않도록 정지 후 대기.
-        ser.write(b"S\n")
-        return "SEARCH no lidar: stop"
+        ser.write(f"F 0.00 {min(BACKUP_SEARCH_SPEED, 0.25):.2f}\n".encode())
+        return "OWF no lidar: slow fwd"
 
-    front = ls['front_near']
     left = ls['lat_L']
     right = ls['lat_R']
-    turn_dir = int(search_ctrl.get('turn_dir', 0))
-    turn_count = int(search_ctrl.get('turn_count', 0))
+    mode = follow_ctrl['mode']
 
-    # 1) 방향 선택
-    if phase == 'SELECT_DIR':
-        turn_dir = _select_search_turn_dir(ls, prev_dir=turn_dir)
-        search_ctrl['turn_dir'] = turn_dir
-        search_ctrl['turn_count'] = 0
-        set_phase('MOVE')
-        ser.write(b"S\n")
-        side = 'RIGHT' if turn_dir > 0 else 'LEFT'
-        return f"SELECT_DIR {side} L={left:.0f} R={right:.0f} F={front:.0f}"
+    # INIT: 한쪽에만 기준 장애물이 있을 때만 wall-follow 시작.
+    # 양쪽 모두 장애물이 있거나 양쪽 모두 없으면 VFH에 맡긴다.
+    if mode == 'INIT':
+        side = _choose_follow_side(ls)
+        if side is None:
+            return _search_without_wall_drive(ser, follow_ctrl, mission_elapsed, ls)
+        follow_ctrl['side'] = side
+        follow_ctrl['side_start'] = now
+        follow_ctrl['lost_start'] = None
+        follow_ctrl['last_steer'] = 0.0
+        follow_ctrl['mode'] = 'FOLLOW_LEFT' if side == 'LEFT' else 'FOLLOW_RIGHT'
+        mode = follow_ctrl['mode']
 
-    # 2) 제한형 VFH 이동
-    if phase == 'MOVE':
-        if front < FRONT_BLOCK_DIST:
-            # 앞이 좁으면 더 밀고 나가지 않고, 정해진 방향으로 시야를 돌린다.
-            set_phase('TURN')
-            ser.write(b"S\n")
-            return f"MOVE blocked→TURN F={front:.0f}"
+    side = follow_ctrl['side']
+    dist = left if side == 'LEFT' else right
 
-        if elapsed < SEARCH_MOVE_TIME:
-            return _limited_vfh_drive(
-                ser,
-                speed_cap=SEARCH_SPEED,
-                steer_limit=SEARCH_VFH_STEER_LIMIT
-            )
+    # 현재 follow 중인데 반대쪽에도 장애물이 잡히면 통로로 진입한 것으로 보고 VFH로 전환.
+    opposite_dist = right if side == 'LEFT' else left
+    if opposite_dist < OBS_FIND_DIST:
+        follow_ctrl['mode'] = 'INIT'
+        follow_ctrl['side'] = None
+        follow_ctrl['lost_start'] = None
+        follow_ctrl['last_steer'] = 0.0
+        return _general_vfh_drive(ser)
 
-        set_phase('TURN')
-        ser.write(b"S\n")
-        return "MOVE done→TURN"
+    # 기준 박스가 박스 끝/모서리 때문에 순간적으로 안 잡힐 때. 바로 버리지 않고 0.7초 유지.
+    if dist >= OBS_FIND_DIST:
+        if follow_ctrl['lost_start'] is None:
+            follow_ctrl['lost_start'] = now
+        lost_elapsed = now - follow_ctrl['lost_start']
+        if lost_elapsed < FOLLOW_LOST_TIME:
+            raw_steer = -LOST_SIDE_STEER if side == 'LEFT' else LOST_SIDE_STEER
+            steer = 0.35 * raw_steer + 0.65 * follow_ctrl['last_steer']
+            steer = float(np.clip(steer, -OBS_STEER_LIMIT, OBS_STEER_LIMIT))
+            follow_ctrl['last_steer'] = steer
+            speed = _speed_limit(OBS_FOLLOW_SPEED)
+            ser.write(f"F {steer:.2f} {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+            return f"FOLLOW_{side}_LOST_KEEP {lost_elapsed:.2f}/{FOLLOW_LOST_TIME:.2f} d={dist:.0f} st={steer:+.2f} spd={speed:.2f}"
 
-    # 3) 같은 방향 제자리 회전
-    if phase == 'TURN':
-        # 회전하려는 방향의 측면이 너무 가까우면 반대쪽이 더 나은지 확인
-        if turn_dir > 0 and right < SIDE_TURN_BLOCK_DIST and left > right + 80:
-            turn_dir = -1
-            search_ctrl['turn_dir'] = turn_dir
-            return f"TURN dir flip to LEFT R={right:.0f} L={left:.0f}"
-        if turn_dir < 0 and left < SIDE_TURN_BLOCK_DIST and right > left + 80:
-            turn_dir = +1
-            search_ctrl['turn_dir'] = turn_dir
-            return f"TURN dir flip to RIGHT L={left:.0f} R={right:.0f}"
+        follow_ctrl['mode'] = 'INIT'
+        follow_ctrl['side'] = None
+        follow_ctrl['lost_start'] = None
+        follow_ctrl['last_steer'] = 0.0
+        return _search_without_wall_drive(ser, follow_ctrl, mission_elapsed, _lidar_read())
 
-        if elapsed < SEARCH_TURN_TIME:
-            _turn_in_place_search(ser, turn_dir)
-            side = 'RIGHT' if turn_dir > 0 else 'LEFT'
-            return f"TURN_{side} t={elapsed:.1f}/{SEARCH_TURN_TIME:.1f} count={turn_count}/{SEARCH_TURN_RESELECT}"
+    follow_ctrl['lost_start'] = None
 
-        # 회전 1회 완료
-        search_ctrl['turn_count'] = turn_count + 1
-
-        if search_ctrl['turn_count'] >= SEARCH_TURN_RESELECT:
-            set_phase('SELECT_DIR')
-            ser.write(b"S\n")
-            return "TURN done→RESELECT"
+    # TARGET±DEAD_BAND 안이면 직진. 범위를 벗어나면 약하게 보정.
+    err = TARGET_OBS_DIST - dist
+    if abs(err) <= DEAD_BAND:
+        raw_steer = 0.0
+    else:
+        if side == 'LEFT':
+            # 왼쪽이 너무 가까우면 +, 너무 멀면 -
+            raw_steer = err / TARGET_OBS_DIST
         else:
-            set_phase('MOVE')
-            ser.write(b"S\n")
-            return "TURN done→MOVE"
+            # 오른쪽이 너무 가까우면 -, 너무 멀면 +
+            raw_steer = -err / TARGET_OBS_DIST
+        raw_steer = float(np.clip(raw_steer, -OBS_STEER_LIMIT, OBS_STEER_LIMIT))
 
-    # 알 수 없는 상태면 초기화
-    _reset_search_ctrl(search_ctrl)
-    ser.write(b"S\n")
-    return "SEARCH reset"
+    # 내부 평활화: 조향 명령이 프레임마다 튀지 않도록 부드럽게 섞음.
+    steer = 0.35 * raw_steer + 0.65 * follow_ctrl['last_steer']
+    steer = float(np.clip(steer, -OBS_STEER_LIMIT, OBS_STEER_LIMIT))
+    follow_ctrl['last_steer'] = steer
+
+    speed = _speed_limit(OBS_FOLLOW_SPEED)
+    ser.write(f"F {steer:.2f} {speed:.2f}\n".encode() if speed > 0 else b"S\n")
+    return f"FOLLOW_{side} d={dist:.0f} target={TARGET_OBS_DIST:.0f} err={err:+.0f} raw={raw_steer:+.2f} st={steer:+.2f} spd={speed:.2f}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,8 +547,7 @@ def _detect_paper(hsv: np.ndarray, color: str):
     mask = _get_mask(hsv, color)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     scored = [(c, cv2.contourArea(c)) for c in cnts]
-    min_area = YELLOW_MIN_AREA if color == 'yellow' else MIN_AREA
-    scored = [(c, a) for c, a in scored if a > min_area]
+    scored = [(c, a) for c, a in scored if a > MIN_AREA]
     if not scored:
         return None
 
@@ -530,17 +580,9 @@ def _weak_detect(hsv: np.ndarray, color: str):
         mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
     else:
         mask = cv2.inRange(hsv, BLUE_LOWER, BLUE_UPPER)
-
-    # 노란색은 조명/반사 영향으로 마스크가 끊기기 쉬워 약탐지에서도 최소 정리 적용
-    if color == 'yellow':
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     scored = [(c, cv2.contourArea(c)) for c in cnts]
-    weak_min_area = YELLOW_WEAK_MIN_AREA if color == 'yellow' else WEAK_MIN_AREA
-    scored = [(c, a) for c, a in scored if a > weak_min_area]
+    scored = [(c, a) for c, a in scored if a > WEAK_MIN_AREA]
     if not scored:
         return None
     cnt, _ = max(scored, key=lambda x: x[1])
@@ -621,13 +663,11 @@ def main():
     state          = 'SEEK'
     on_zone_count  = 0
     stop_start     = None
-    last_seen      = 0.0
-    target_seen_once = False  # 현재 목표 색상을 강/약탐지로 한 번이라도 본 적 있는지
+    last_seen      = time.time()
     last_steer     = 0.0
     smoothed_steer = 0.0
     area_peak_seen        = False
     peak_area_r           = 0.0
-    last_arrival_cy       = -1.0  # 마지막 강탐지 색지 중심 y. 화면 아래쪽에서 사라질 때만 도착 인정
     approach_steer_locked = False
     locked_approach_steer = 0.0
     prev_area_r           = 0.0
@@ -635,11 +675,12 @@ def main():
     obs_active            = False
     obs_clear_time        = None
     mem_invis_count       = 0
-    search_ctrl           = {}  # target_seen_once=False일 때 좌/우 스캔+장애물 기준 이동 상태
-    _reset_search_ctrl(search_ctrl)
+    follow_ctrl           = {}
+    mission_start_time    = time.time()
+    _reset_follow_ctrl(follow_ctrl)
 
     print("=" * 60)
-    print("  Camera_v6  |  경량화 (minAreaRect+distanceTransform)")
+    print("  Camera_v12 | start grace + one-side wall-follow + outside arc return + VFH")
     print(f"  처리해상도: {CAM_W}×{CAM_H}   목표: RED→YELLOW→BLUE")
     print("=" * 60)
 
@@ -682,7 +723,6 @@ def main():
                     on_zone_count          = 0
                     area_peak_seen         = False
                     peak_area_r            = 0.0
-                    last_arrival_cy       = -1.0
                     approach_steer_locked  = False
                     locked_approach_steer  = 0.0
                     prev_area_r            = 0.0
@@ -690,9 +730,8 @@ def main():
                     obs_active             = False
                     obs_clear_time         = None
                     mem_invis_count        = 0
-                    last_seen              = 0.0
-                    target_seen_once       = False
-                    _reset_search_ctrl(search_ctrl)
+                    last_seen              = time.time()
+                    _reset_follow_ctrl(follow_ctrl)
                     print(f"  ✅ {color.upper()} 완료 → {TARGETS[target_idx].upper()}")
                 else:
                     state = 'DONE'
@@ -705,14 +744,12 @@ def main():
 
         # ① 강탐지 ──────────────────────────────────────────────────────
         if det is not None:
-            target_seen_once = True
-            _reset_search_ctrl(search_ctrl)
             last_seen = time.time()
+            _reset_follow_ctrl(follow_ctrl)
             cx, cy    = det['cx'], det['cy']
             area_r    = det['area_r']
             offset    = _offset(cx)
             dcx, dcy  = int(cx), int(cy)
-            last_arrival_cy = cy
 
             mem_invis_count = 0
             if area_r >= AREA_PEAK_THRES:
@@ -776,8 +813,6 @@ def main():
             prev_area_r = 0.0
             w = _weak_detect(hsv, color)
             if w is not None:
-                target_seen_once = True
-                _reset_search_ctrl(search_ctrl)
                 cnt_w, wcx, wcy = w
                 weak_offset    = _offset(wcx)
                 steer          = float(np.clip(weak_offset * WEAK_STEER_GAIN,
@@ -800,22 +835,12 @@ def main():
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 180), 2)
                 print(f"  [INVIS] {color.upper()} pk={peak_area_r:.2f} cnt={on_zone_count} nudge={nudge_spd:.2f}")
                 if on_zone_count >= CONFIRM_FRAMES:
-                    # 도착 판정 핵심 조건:
-                    # 마지막으로 강하게 본 색지 중심이 화면 아래쪽에 있었을 때만 도착 인정
-                    if last_arrival_cy >= CAM_H * ARRIVAL_CY_RATIO:
-                        state = 'STOP'; stop_start = time.time()
-                        ser.write(b"S\n")
-                        print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f} last_cy={last_arrival_cy:.0f}")
-                        cv2.imshow('Robot View', vis)
-                        cv2.waitKey(1)
-                        continue
-                    else:
-                        # 화면 아래쪽에서 사라진 게 아니면 장애물 가림/인식 실패로 보고 재탐색
-                        area_peak_seen = False
-                        peak_area_r = 0.0
-                        on_zone_count = 0
-                        approach_steer_locked = False
-                        print(f"  [LOST-NOT-ARRIVE] {color.upper()} last_cy={last_arrival_cy:.0f} < {CAM_H * ARRIVAL_CY_RATIO:.0f}")
+                    state = 'STOP'; stop_start = time.time()
+                    ser.write(b"S\n")
+                    print(f"  🎯 {color.upper()} 도달! peak={peak_area_r:.2f}")
+                    cv2.imshow('Robot View', vis)
+                    cv2.waitKey(1)
+                    continue
 
         # ③ 미탐지 → VFH 탐색 ────────────────────────────────────────────
         else:
@@ -823,9 +848,8 @@ def main():
             on_zone_count = max(0, on_zone_count - 1)
             w = _weak_detect(hsv, color)
             if w is not None:
-                target_seen_once = True
-                _reset_search_ctrl(search_ctrl)
                 mem_invis_count = 0
+                _reset_follow_ctrl(follow_ctrl)
                 cnt_w, wcx, wcy = w
                 weak_offset = _offset(wcx)
                 w_steer     = float(np.clip(weak_offset * 3.0, -MAX_STEER, MAX_STEER))
@@ -837,69 +861,32 @@ def main():
                             (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 180, 0), 2)
                 print(f"  [WEAK] {color.upper()} curve{arrow} off={weak_offset:+.2f}")
             else:
-                if not target_seen_once:
-                    mem_invis_count = 0
-                    log = _search_unseen_scan_obstacle_drive(ser, search_ctrl)
-                    smoothed_steer *= (1.0 - STEER_SMOOTH_ALPHA)
-                    cv2.putText(vis, f"SEARCH_UNSEEN {log}",
-                                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (80, 220, 255), 2)
-                    print(f"  [SEARCH_UNSEEN] {color.upper()} → {log}")
+                elapsed = time.time() - last_seen
+                if elapsed < COLOR_MEMORY_TIME:
+                    mem_invis_count += 1
+                    steer_cmd      = STEER_SMOOTH_ALPHA * last_steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
+                    smoothed_steer = steer_cmd
+                    mem_speed      = _speed_limit(SPEED_NEAR)
+                    ser.write(f"F {steer_cmd:.2f} {mem_speed:.2f}\n".encode()
+                              if mem_speed > 0 else b"S\n")
+                    cv2.putText(vis, f"MEM {elapsed:.2f}s cnt:{mem_invis_count} st={steer_cmd:+.2f}",
+                                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 220, 100), 2)
+                    print(f"  [MEM] {color.upper()} t={elapsed:.2f}s cnt={mem_invis_count} st={steer_cmd:+.2f}")
+                    if mem_invis_count >= CONFIRM_FRAMES:
+                        state = 'STOP'; stop_start = time.time()
+                        ser.write(b"S\n")
+                        print(f"  🎯 {color.upper()} 도달! (MEM)")
+                        cv2.imshow('Robot View', vis)
+                        cv2.waitKey(1)
+                        continue
                 else:
-                    elapsed = time.time() - last_seen
-
-                    if elapsed < COLOR_MEMORY_TIME:
-                        mem_invis_count += 1
-                        steer_cmd      = STEER_SMOOTH_ALPHA * last_steer + (1.0 - STEER_SMOOTH_ALPHA) * smoothed_steer
-                        smoothed_steer = steer_cmd
-                        mem_speed      = _speed_limit(SPEED_NEAR)
-                        ser.write(f"F {steer_cmd:.2f} {mem_speed:.2f}\n".encode()
-                                  if mem_speed > 0 else b"S\n")
-                        cv2.putText(vis, f"MEM {elapsed:.2f}s cnt:{mem_invis_count} st={steer_cmd:+.2f}",
-                                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (100, 220, 100), 2)
-                        print(f"  [MEM] {color.upper()} t={elapsed:.2f}s cnt={mem_invis_count} st={steer_cmd:+.2f}")
-                        if mem_invis_count >= CONFIRM_FRAMES:
-                            # MEM에서도 화면 아래쪽에서 사라진 경우에만 도착 인정
-                            if last_arrival_cy >= CAM_H * ARRIVAL_CY_RATIO:
-                                state = 'STOP'; stop_start = time.time()
-                                ser.write(b"S\n")
-                                print(f"  🎯 {color.upper()} 도달! (MEM) last_cy={last_arrival_cy:.0f}")
-                                cv2.imshow('Robot View', vis)
-                                cv2.waitKey(1)
-                                continue
-                            else:
-                                mem_invis_count = 0
-                                print(f"  [MEM-LOST-NOT-ARRIVE] {color.upper()} last_cy={last_arrival_cy:.0f} < {CAM_H * ARRIVAL_CY_RATIO:.0f}")
-                    else:
-                        mem_invis_count = 0
-                        obstacle_now = ls['has_data'] and ls['emg_near'] < DETECT
-                        if obstacle_now:
-                            last_obs_steer = float(np.clip(
-                                (ls['lat_L'] - ls['lat_R']) / (DETECT + 1e-9), -1.0, 1.0))
-                            if not obs_active:
-                                obs_clear_time = None
-                            obs_active = True
-                        elif obs_active:
-                            obs_active     = False
-                            obs_clear_time = time.time()
-
-                        return_elapsed = (time.time() - obs_clear_time) \
-                            if obs_clear_time is not None else OBS_RETURN_TIME + 1.0
-
-                        if return_elapsed < OBS_RETURN_TIME:
-                            ret_st  = float(np.clip(last_obs_steer * OBS_RETURN_GAIN,
-                                                    -MAX_STEER, MAX_STEER))
-                            ret_spd = _speed_limit(SPEED_NEAR)
-                            ser.write(f"F {ret_st:.2f} {ret_spd:.2f}\n".encode()
-                                      if ret_spd > 0 else b"S\n")
-                            cv2.putText(vis, f"OBS_RET st={ret_st:+.2f} {return_elapsed:.1f}s",
-                                        (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 165, 255), 2)
-                            print(f"  [OBS_RET] {color.upper()} st={ret_st:+.2f} t={return_elapsed:.1f}s")
-                        else:
-                            log = _limited_vfh_drive(ser, speed_cap=SEARCH_SPEED, steer_limit=SEARCH_VFH_STEER_LIMIT)
-                            smoothed_steer *= (1.0 - STEER_SMOOTH_ALPHA)
-                            cv2.putText(vis, f"LIMITED_VFH {log}",
-                                        (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (100, 200, 255), 2)
-                            print(f"  [LIMITED_VFH] {color.upper()} {elapsed:.1f}s → {log}")
+                    mem_invis_count = 0
+                    mission_elapsed = time.time() - mission_start_time
+                    log = _obstacle_wall_follow_search(ser, follow_ctrl, mission_elapsed)
+                    smoothed_steer *= (1.0 - STEER_SMOOTH_ALPHA)
+                    cv2.putText(vis, f"OBS_WALL {log}",
+                                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 200, 255), 2)
+                    print(f"  [OBS_WALL] {color.upper()} {elapsed:.1f}s → {log}")
 
         # ── 공통 HUD ─────────────────────────────────────────────────────
         emg_txt = f" EMG:{ls['emg_near']:.0f}mm" if ls['has_data'] else ""
